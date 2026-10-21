@@ -2,1681 +2,895 @@
 ui.main_window
 ==============
 
-The whole GUI: header, device card, three working tabs and a live log panel.
+The application shell: sidebar navigation, a stacked page area and a collapsible
+log dock.
 
-Threading note
---------------
-No tab ever touches :class:`~core.adb_manager.AdbManager` directly. Tabs raise
-signals, :class:`MainWindow` forwards them to the worker living on the worker
-thread, and results come back as signals. That keeps every adb call — including
-the slow package listings — entirely off the GUI thread.
+Threading contract
+------------------
+The window never calls :class:`~core.adb_extended.ExtendedAdbManager` directly.
+It emits requests through :meth:`ExtendedAdbWorker.request` and receives results
+through the worker's signals. Every slot below therefore runs on the GUI thread
+and can touch widgets directly.
 
-Cross-thread callbacks use :class:`UiInvoker`, a tiny QObject that lives in
-the GUI thread and exposes a signal. Emitting that signal from a worker thread
-produces a queued delivery, so the handler always runs on the GUI thread.
+Two subtleties are worth remembering when editing this file:
+
+* **Worker threads must be parentless.** An earlier version parented each
+  helper ``QThread`` to the window; Qt destroyed them during shutdown and the
+  process crashed. :meth:`_spawn` now creates unparented threads and keeps them
+  in ``_spawned_threads`` so :meth:`closeEvent` can drain them politely.
+* **Signals are wired by name.** :meth:`_spawn` receives a mapping of
+  *signal names* to slots rather than signal objects, because the worker does
+  not exist until the thread is built.
 """
 
 from __future__ import annotations
 
-import sys
-from dataclasses import dataclass, field
+import time
 from pathlib import Path
-from typing import Callable, Iterable
 
-from PySide6.QtCore import QDateTime, QObject, Qt, QThread, Signal
-from PySide6.QtGui import QAction, QColor, QFont, QKeySequence
+from PySide6.QtCore import QThread, QTimer
+from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QAbstractItemView,
     QApplication,
-    QCheckBox,
     QFrame,
-    QGridLayout,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
-    QLineEdit,
     QMainWindow,
-    QMenu,
     QMessageBox,
-    QPlainTextEdit,
-    QProgressBar,
-    QPushButton,
-    QScrollArea,
-    QSizePolicy,
-    QTableWidget,
-    QTableWidgetItem,
-    QTabWidget,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
 import config
 from core import updater
-from core.adb_manager import (
-    AdbManager,
-    AdbWorker,
-    DeviceRecord,
-    PackageRecord,
-)
+from core.adb_extended import ExtendedAdbManager, ExtendedAdbWorker
+from core.app_model import AppEntry, FlagStore, LiveSnapshot
 
 from . import styles
+from .icons import IconStore
+from .log_panel import LogPanel
+from .pages_database import DatabasePage
+from .pages_live import LivePage
+from .pages_scan import ScanPage
+from .pages_tools import ToolsPage
+from .widgets import HBox, Hairline, NavButton, VBox, make_button
+
+#: Navigation order. The index into the stacked widget matches this order.
+PAGE_SCAN = 0
+PAGE_LIVE = 1
+PAGE_TOOLS = 2
+PAGE_DATABASE = 3
 
 
-# ---------------------------------------------------------------------------
-# Cross-thread helper
-# ---------------------------------------------------------------------------
-
-
-class UiInvoker(QObject):
-    """Marshal a plain Python callable onto the GUI thread.
-
-    ``QMetaObject.invokeMethod`` can only target registered slots on a QObject,
-    which arbitrary lambdas are not. A signal on an object that lives in the
-    GUI thread sidesteps that: emitting it from any thread delivers the call
-    back to the GUI thread's event loop.
-    """
-
-    called = Signal(object, object, object)
-
-    def __init__(self, parent: QObject | None = None) -> None:
-        super().__init__(parent)
-        self.called.connect(self._dispatch, Qt.ConnectionType.QueuedConnection)
-
-    def _dispatch(self, fn: object, args: object, kwargs: object) -> None:
-        try:
-            fn(*(args or ()), **(kwargs or {}))
-        except Exception as exc:  # noqa: BLE001 - never kill the event loop
-            import traceback
-
-            traceback.print_exc()
-            print(f"[ADSremovedPP] GUI callback failed: {exc}")
-
-    def post(self, fn: Callable, *args, **kwargs) -> None:
-        """Queue ``fn`` for execution on the GUI thread."""
-        self.called.emit(fn, args, kwargs)
-
-
-# ---------------------------------------------------------------------------
-# Small building blocks
-# ---------------------------------------------------------------------------
-
-
-class Card(QFrame):
-    """Rounded surface used everywhere for grouping."""
-
-    def __init__(self, parent: QWidget | None = None, accent: bool = False) -> None:
-        super().__init__(parent)
-        self.setObjectName("CardAccent" if accent else "Card")
-
-
-class LogPanel(QFrame):
-    """Bottom log strip with level colouring."""
-
-    CLEARED = Signal()
-
-    LEVEL_COLORS = {
-        "INFO":  "#8b93a7",
-        "OK":    styles.C["success"],
-        "WARN":  styles.C["warning"],
-        "ERROR": styles.C["danger"],
-    }
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setObjectName("LogFrame")
-        self.setFixedHeight(186)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 8, 0, 0)
-        layout.setSpacing(6)
-
-        header = QHBoxLayout()
-        header.setContentsMargins(18, 0, 12, 0)
-
-        title = QLabel("บันทึกการทำงาน")
-        title.setObjectName("FieldLabel")
-        header.addWidget(title)
-        header.addStretch(1)
-
-        self.count_label = QLabel("0 รายการ")
-        self.count_label.setObjectName("FieldLabel")
-        header.addWidget(self.count_label)
-
-        self.clear_button = QPushButton("ล้าง")
-        self.clear_button.setObjectName("Ghost")
-        self.clear_button.clicked.connect(lambda: self.clear())
-        header.addWidget(self.clear_button)
-
-        layout.addLayout(header)
-
-        self.view = QPlainTextEdit()
-        self.view.setObjectName("LogView")
-        self.view.setReadOnly(True)
-        self.view.setMaximumBlockCount(config.LOG_PANEL_MAX_BLOCKS)
-        self.view.setFont(QFont("Consolas", 9))
-        layout.addWidget(self.view, 1)
-
-        self._entries = 0
-
-    def append(self, level: str, message: str) -> None:
-        self._entries += 1
-        self.count_label.setText(f"{self._entries} รายการ")
-        stamp = QDateTime.currentDateTime().toString("HH:mm:ss")
-        color = self.LEVEL_COLORS.get(level.upper(), styles.C["text_muted"])
-        safe = message.replace("&", "&amp;")
-        self.view.appendHtml(
-            f'<span style="color:{styles.C["text_dim"]}">{stamp}</span> '
-            f'<span style="color:{color}">[{level.upper():5}]</span> '
-            f'<span style="color:{styles.C["text"]}">{safe}</span>'
-        )
-
-    def clear(self) -> None:
-        self.view.clear()
-        self._entries = 0
-        self.count_label.setText("0 รายการ")
-        self.CLEARED.emit()
-
-
-class StatCard(Card):
-    """Large number + caption tile."""
-
-    def __init__(self, caption: str, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 12, 16, 12)
-        layout.setSpacing(2)
-
-        self.value_label = QLabel("—")
-        self.value_label.setObjectName("StatValue")
-        layout.addWidget(self.value_label)
-
-        self.caption_label = QLabel(caption)
-        self.caption_label.setObjectName("FieldLabel")
-        layout.addWidget(self.caption_label)
-
-        self.setMinimumHeight(74)
-
-    def set_value(self, text: str, color: str | None = None) -> None:
-        self.value_label.setText(text)
-        self.value_label.setStyleSheet(f"color: {color or styles.C['accent']};")
-
-
-class FieldBox(Card):
-    """One labelled value inside the device card."""
-
-    def __init__(self, label: str, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 10, 12, 10)
-        layout.setSpacing(3)
-
-        caption = QLabel(label)
-        caption.setObjectName("FieldLabel")
-        layout.addWidget(caption)
-
-        self.value = QLabel("—")
-        self.value.setObjectName("FieldValue")
-        self.value.setWordWrap(True)
-        layout.addWidget(self.value)
-
-        self.setMinimumHeight(66)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-
-    def set_value(self, text: str, color: str | None = None) -> None:
-        self.value.setText(text if text else "—")
-        self.value.setStyleSheet(f"color: {color or styles.C['text']};")
-
-
-class BatteryBar(QProgressBar):
-    """Battery gauge that recolours itself by charge level."""
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setTextVisible(False)
-        self.setFixedHeight(6)
-        self.setRange(0, 100)
-        self.setValue(0)
-
-    def set_level(self, level: int | None) -> None:
-        base = (
-            f"QProgressBar{{background:{styles.C['bg_alt']};"
-            f"border:1px solid {styles.C['border']};border-radius:3px;}}"
-        )
-        if level is None:
-            self.setValue(0)
-            self.setStyleSheet(base)
-            return
-
-        self.setValue(max(0, min(100, level)))
-        if level <= 15:
-            color = styles.C["danger"]
-        elif level <= 30:
-            color = styles.C["warning"]
-        else:
-            color = styles.C["success"]
-        self.setStyleSheet(base + f"QProgressBar::chunk{{background:{color};border-radius:3px;}}")
-
-
-# ---------------------------------------------------------------------------
-# Tab 1 — Quick Scan & Adware Remover
-# ---------------------------------------------------------------------------
-
-
-class ScanTab(QWidget):
-    """Compare installed packages against the blacklist and clean up."""
-
-    scan_requested = Signal()
-    refresh_requested = Signal()
-    clean_requested = Signal(list)
-    whitelist_requested = Signal(list)
-
-    COLUMNS = ("เลือก", "ชื่อแอป", "แพ็กเกจ", "ประเภท", "ความเสี่ยง", "ที่มา")
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._threats: list[PackageRecord] = []
-        self._build()
-
-    def _build(self) -> None:
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 14, 0, 0)
-        root.setSpacing(10)
-
-        # ---- toolbar ----
-        toolbar = QHBoxLayout()
-        toolbar.setSpacing(8)
-
-        self.btn_scan = QPushButton("เริ่มสแกน")
-        self.btn_scan.setObjectName("Primary")
-        self.btn_scan.setMinimumHeight(40)
-        self.btn_scan.setMinimumWidth(150)
-        self.btn_scan.clicked.connect(lambda: self.scan_requested.emit())
-        toolbar.addWidget(self.btn_scan)
-
-        self.btn_refresh = QPushButton("รีเฟรชอุปกรณ์")
-        self.btn_refresh.setMinimumHeight(40)
-        self.btn_refresh.clicked.connect(lambda: self.refresh_requested.emit())
-        toolbar.addWidget(self.btn_refresh)
-
-        self.search_box = QLineEdit()
-        self.search_box.setPlaceholderText("ค้นหาชื่อแอปหรือแพ็กเกจ...")
-        self.search_box.setClearButtonEnabled(True)
-        self.search_box.setMinimumHeight(40)
-        self.search_box.textChanged.connect(self._apply_filter)
-        toolbar.addWidget(self.search_box, 1)
-
-        root.addLayout(toolbar)
-
-        # ---- statistics ----
-        stats = QHBoxLayout()
-        stats.setSpacing(10)
-        self.stat_scanned = StatCard("แอปที่ตรวจแล้ว")
-        self.stat_found = StatCard("พบรายการต้องระวัง")
-        self.stat_selected = StatCard("เลือกไว้")
-        for card in (self.stat_scanned, self.stat_found, self.stat_selected):
-            stats.addWidget(card)
-        root.addLayout(stats)
-
-        # ---- results table ----
-        self.table = QTableWidget(0, len(self.COLUMNS))
-        self.table.setHorizontalHeaderLabels(self.COLUMNS)
-        self.table.verticalHeader().setVisible(False)
-        self.table.setAlternatingRowColors(True)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.table.setSortingEnabled(True)
-        self.table.itemChanged.connect(self._on_item_changed)
-        self._configure_columns()
-        root.addWidget(self.table, 1)
-
-        # ---- footer ----
-        footer = QHBoxLayout()
-        footer.setSpacing(8)
-
-        self.check_all = QCheckBox("เลือกทั้งหมด")
-        self.check_all.toggled.connect(self._toggle_all)
-        footer.addWidget(self.check_all)
-
-        self.btn_whitelist = QPushButton("ข้ามรายการที่เลือก")
-        self.btn_whitelist.setObjectName("Ghost")
-        self.btn_whitelist.setEnabled(False)
-        self.btn_whitelist.clicked.connect(lambda: self._emit_whitelist())
-        footer.addWidget(self.btn_whitelist)
-
-        footer.addStretch(1)
-
-        self.btn_clean = QPushButton("ล้างรายการที่เลือก")
-        self.btn_clean.setObjectName("Danger")
-        self.btn_clean.setMinimumHeight(40)
-        self.btn_clean.setMinimumWidth(190)
-        self.btn_clean.setEnabled(False)
-        self.btn_clean.clicked.connect(lambda: self._emit_clean())
-        footer.addWidget(self.btn_clean)
-
-        root.addLayout(footer)
-
-    def _configure_columns(self) -> None:
-        header = self.table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
-        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
-        header.setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
-        self.table.setColumnWidth(0, 52)
-        self.table.setColumnWidth(2, 230)
-        self.table.setColumnWidth(3, 110)
-        self.table.setColumnWidth(4, 100)
-        self.table.setColumnWidth(5, 120)
-
-    # ---- population ----
-
-    def set_scanned_total(self, total: int) -> None:
-        self.stat_scanned.set_value(str(total))
-
-    def reset(self) -> None:
-        self.table.blockSignals(True)
-        self.table.setRowCount(0)
-        self.table.blockSignals(False)
-        self._threats = []
-        self.check_all.blockSignals(True)
-        self.check_all.setChecked(False)
-        self.check_all.blockSignals(False)
-        self.stat_scanned.set_value("—")
-        self.stat_found.set_value("—")
-        self.stat_selected.set_value("0")
-        self.btn_clean.setEnabled(False)
-        self.btn_whitelist.setEnabled(False)
-
-    def set_threats(self, threats: Iterable[PackageRecord]) -> None:
-        self._threats = list(threats)
-        self.table.blockSignals(True)
-        self.table.setSortingEnabled(False)
-        self.table.setRowCount(0)
-        self.check_all.blockSignals(True)
-        self.check_all.setChecked(False)
-        self.check_all.blockSignals(False)
-
-        for record in self._threats:
-            row = self.table.rowCount()
-            self.table.insertRow(row)
-
-            check_item = QTableWidgetItem("")
-            check_item.setFlags(
-                Qt.ItemFlag.ItemIsUserCheckable
-                | Qt.ItemFlag.ItemIsEnabled
-                | Qt.ItemFlag.ItemIsSelectable
-            )
-            check_item.setCheckState(Qt.CheckState.Unchecked)
-            check_item.setData(Qt.ItemDataRole.UserRole, record.package)
-            check_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.table.setItem(row, 0, check_item)
-
-            self.table.setItem(row, 1, QTableWidgetItem(record.display_name))
-            self.table.setItem(row, 2, QTableWidgetItem(record.package))
-            self.table.setItem(row, 3, QTableWidgetItem(record.threat_type or "—"))
-
-            risk_item = QTableWidgetItem(record.risk or "ไม่ระบุ")
-            risk_item.setForeground(QColor(styles.risk_color(record.risk)))
-            risk_font = risk_item.font()
-            risk_font.setBold(True)
-            risk_item.setFont(risk_font)
-            self.table.setItem(row, 4, risk_item)
-
-            origin_text = "แอประบบ" if record.is_system else "ติดตั้งโดยผู้ใช้"
-            origin_item = QTableWidgetItem(origin_text)
-            origin_item.setForeground(
-                QColor(styles.C["text_dim"] if record.is_system else styles.C["text"])
-            )
-            self.table.setItem(row, 5, origin_item)
-
-        self.table.setSortingEnabled(True)
-        self.table.blockSignals(False)
-        self._update_counters()
-
-    def remove_rows(self, packages: Iterable[str]) -> None:
-        """Drop successfully removed packages from the table."""
-        targets = set(packages)
-        if not targets:
-            return
-        self.table.blockSignals(True)
-        for row in range(self.table.rowCount() - 1, -1, -1):
-            item = self.table.item(row, 0)
-            if item is not None and str(item.data(Qt.ItemDataRole.UserRole)) in targets:
-                self.table.removeRow(row)
-                self._threats = [
-                    t for t in self._threats if t.package not in targets
-                ]
-        self.table.blockSignals(False)
-        self._update_counters()
-
-    # ---- interaction ----
-
-    def _apply_filter(self, text: str) -> None:
-        needle = text.strip().lower()
-        for row in range(self.table.rowCount()):
-            package_item = self.table.item(row, 2)
-            name_item = self.table.item(row, 1)
-            haystack = " ".join(
-                [
-                    package_item.text() if package_item else "",
-                    name_item.text() if name_item else "",
-                ]
-            ).lower()
-            self.table.setRowHidden(row, bool(needle) and needle not in haystack)
-
-    def _on_item_changed(self, item: QTableWidgetItem) -> None:
-        if item.column() == 0:
-            self._update_counters()
-
-    def _toggle_all(self, checked: bool) -> None:
-        state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
-        self.table.blockSignals(True)
-        for row in range(self.table.rowCount()):
-            if self.table.isRowHidden(row):
-                continue
-            item = self.table.item(row, 0)
-            if item is not None:
-                item.setCheckState(state)
-        self.table.blockSignals(False)
-        self._update_counters()
-
-    def checked_packages(self) -> list[str]:
-        packages: list[str] = []
-        for row in range(self.table.rowCount()):
-            if self.table.isRowHidden(row):
-                continue
-            item = self.table.item(row, 0)
-            if item is not None and item.checkState() == Qt.CheckState.Checked:
-                packages.append(str(item.data(Qt.ItemDataRole.UserRole)))
-        return packages
-
-    def _update_counters(self) -> None:
-        chosen = len(self.checked_packages())
-        self.stat_found.set_value(
-            str(len(self._threats)),
-            styles.C["danger"] if self._threats else styles.C["success"],
-        )
-        self.stat_selected.set_value(str(chosen), styles.C["text"])
-        self.btn_clean.setEnabled(chosen > 0)
-        self.btn_whitelist.setEnabled(chosen > 0)
-
-    def _emit_clean(self) -> None:
-        packages = self.checked_packages()
-        if packages:
-            self.clean_requested.emit(packages)
-
-    def _emit_whitelist(self) -> None:
-        packages = self.checked_packages()
-        if packages:
-            self.whitelist_requested.emit(packages)
-
-    def set_busy(self, busy: bool) -> None:
-        self.btn_scan.setEnabled(not busy)
-        self.btn_refresh.setEnabled(not busy)
-
-
-# ---------------------------------------------------------------------------
-# Tab 2 — Package Manager
-# ---------------------------------------------------------------------------
-
-
-class PackageTab(QWidget):
-    """Full app browser with search, normal removal and forced removal."""
-
-    refresh_requested = Signal()
-    force_uninstall_requested = Signal(list)
-    normal_uninstall_requested = Signal(list)
-    clear_data_requested = Signal(list)
-
-    COLUMNS = ("เลือก", "แพ็กเกจ", "ประเภท", "สถานะ")
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._records: list[PackageRecord] = []
-        self._build()
-
-    def _build(self) -> None:
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 14, 0, 0)
-        root.setSpacing(10)
-
-        toolbar = QHBoxLayout()
-        toolbar.setSpacing(8)
-
-        self.btn_reload = QPushButton("โหลดรายชื่อแอป")
-        self.btn_reload.setObjectName("Primary")
-        self.btn_reload.setMinimumHeight(40)
-        self.btn_reload.setMinimumWidth(160)
-        self.btn_reload.clicked.connect(lambda: self.refresh_requested.emit())
-        toolbar.addWidget(self.btn_reload)
-
-        self.search_box = QLineEdit()
-        self.search_box.setPlaceholderText("ค้นหาแพ็กเกจ เช่น com.facebook...")
-        self.search_box.setClearButtonEnabled(True)
-        self.search_box.setMinimumHeight(40)
-        self.search_box.textChanged.connect(self._apply_filter)
-        toolbar.addWidget(self.search_box, 1)
-
-        root.addLayout(toolbar)
-
-        self.table = QTableWidget(0, len(self.COLUMNS))
-        self.table.setHorizontalHeaderLabels(self.COLUMNS)
-        self.table.verticalHeader().setVisible(False)
-        self.table.setAlternatingRowColors(True)
-        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.table.setSortingEnabled(True)
-        self.table.itemChanged.connect(self._on_item_changed)
-
-        header = self.table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
-        self.table.setColumnWidth(0, 52)
-        self.table.setColumnWidth(2, 150)
-        self.table.setColumnWidth(3, 140)
-
-        root.addWidget(self.table, 1)
-
-        footer = QHBoxLayout()
-        footer.setSpacing(8)
-
-        self.check_all = QCheckBox("เลือกทั้งหมดที่เห็น")
-        self.check_all.toggled.connect(self._toggle_all)
-        footer.addWidget(self.check_all)
-
-        self.selection_label = QLabel("เลือกไว้ 0 รายการ")
-        self.selection_label.setObjectName("SectionHint")
-        footer.addWidget(self.selection_label)
-
-        footer.addStretch(1)
-
-        self.btn_clear = QPushButton("ล้างข้อมูลแอป")
-        self.btn_clear.setObjectName("Ghost")
-        self.btn_clear.setEnabled(False)
-        self.btn_clear.clicked.connect(lambda: self._emit(self.clear_data_requested))
-        footer.addWidget(self.btn_clear)
-
-        self.btn_normal = QPushButton("ถอนการติดตั้ง")
-        self.btn_normal.setEnabled(False)
-        self.btn_normal.clicked.connect(lambda: self._emit(self.normal_uninstall_requested))
-        footer.addWidget(self.btn_normal)
-
-        self.btn_force = QPushButton("บังคับถอนการติดตั้ง")
-        self.btn_force.setObjectName("Danger")
-        self.btn_force.setMinimumHeight(40)
-        self.btn_force.setMinimumWidth(200)
-        self.btn_force.setEnabled(False)
-        self.btn_force.clicked.connect(lambda: self._emit(self.force_uninstall_requested))
-        footer.addWidget(self.btn_force)
-
-        root.addLayout(footer)
-
-    def set_packages(self, records: Iterable[PackageRecord]) -> None:
-        self._records = list(records)
-        self.table.blockSignals(True)
-        self.table.setSortingEnabled(False)
-        self.table.setRowCount(0)
-        self.check_all.blockSignals(True)
-        self.check_all.setChecked(False)
-        self.check_all.blockSignals(False)
-
-        for record in self._records:
-            row = self.table.rowCount()
-            self.table.insertRow(row)
-
-            check_item = QTableWidgetItem("")
-            check_item.setFlags(
-                Qt.ItemFlag.ItemIsUserCheckable
-                | Qt.ItemFlag.ItemIsEnabled
-                | Qt.ItemFlag.ItemIsSelectable
-            )
-            check_item.setCheckState(Qt.CheckState.Unchecked)
-            check_item.setData(Qt.ItemDataRole.UserRole, record.package)
-            check_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.table.setItem(row, 0, check_item)
-
-            self.table.setItem(row, 1, QTableWidgetItem(record.package))
-
-            kind_text = "แอประบบ" if record.is_system else "แอปผู้ใช้"
-            kind_item = QTableWidgetItem(kind_text)
-            kind_item.setForeground(
-                QColor(styles.C["text_dim"] if record.is_system else styles.C["text"])
-            )
-            self.table.setItem(row, 2, kind_item)
-
-            threat = self._lookup_threat(record.package)
-            if threat is not None:
-                status_item = QTableWidgetItem(f"ต้องระวัง ({threat})")
-                status_item.setForeground(QColor(styles.C["danger"]))
-            else:
-                status_item = QTableWidgetItem("ไม่พบรายการต้องระวัง")
-                status_item.setForeground(QColor(styles.C["text_dim"]))
-            self.table.setItem(row, 3, status_item)
-
-        self.table.setSortingEnabled(True)
-        self.table.blockSignals(False)
-        self._update_selection_label()
-
-    def set_threat_map(self, mapping: dict[str, str]) -> None:
-        """Refresh the status column once a scan has run."""
-        for row in range(self.table.rowCount()):
-            package_item = self.table.item(row, 1)
-            if package_item is None:
-                continue
-            package = package_item.text()
-            status_item = self.table.item(row, 3)
-            if status_item is None:
-                continue
-            if package in mapping:
-                status_item.setText(f"ต้องระวัง ({mapping[package]})")
-                status_item.setForeground(QColor(styles.C["danger"]))
-            else:
-                status_item.setText("ไม่พบรายการต้องระวัง")
-                status_item.setForeground(QColor(styles.C["text_dim"]))
-
-    def _lookup_threat(self, package: str) -> str | None:
-        mapping = getattr(self, "_threat_lookup", None)
-        if not mapping:
-            return None
-        return mapping.get(package)
-
-    def remove_rows(self, packages: Iterable[str]) -> None:
-        targets = set(packages)
-        if not targets:
-            return
-        self.table.blockSignals(True)
-        for row in range(self.table.rowCount() - 1, -1, -1):
-            item = self.table.item(row, 1)
-            if item is not None and item.text() in targets:
-                self.table.removeRow(row)
-        self.table.blockSignals(False)
-        self._update_selection_label()
-
-    def _apply_filter(self, text: str) -> None:
-        needle = text.strip().lower()
-        for row in range(self.table.rowCount()):
-            item = self.table.item(row, 1)
-            haystack = item.text().lower() if item else ""
-            self.table.setRowHidden(row, bool(needle) and needle not in haystack)
-
-    def _on_item_changed(self, item: QTableWidgetItem) -> None:
-        if item.column() == 0:
-            self._update_selection_label()
-
-    def _toggle_all(self, checked: bool) -> None:
-        state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
-        self.table.blockSignals(True)
-        for row in range(self.table.rowCount()):
-            if self.table.isRowHidden(row):
-                continue
-            item = self.table.item(row, 0)
-            if item is not None:
-                item.setCheckState(state)
-        self.table.blockSignals(False)
-        self._update_selection_label()
-
-    def checked_packages(self) -> list[str]:
-        packages: list[str] = []
-        for row in range(self.table.rowCount()):
-            if self.table.isRowHidden(row):
-                continue
-            item = self.table.item(row, 0)
-            if item is not None and item.checkState() == Qt.CheckState.Checked:
-                packages.append(str(item.data(Qt.ItemDataRole.UserRole)))
-        return packages
-
-    def _update_selection_label(self) -> None:
-        count = len(self.checked_packages())
-        self.selection_label.setText(f"เลือกไว้ {count} รายการ")
-        enabled = count > 0
-        self.btn_force.setEnabled(enabled)
-        self.btn_normal.setEnabled(enabled)
-        self.btn_clear.setEnabled(enabled)
-
-    def _emit(self, signal: Signal) -> None:
-        packages = self.checked_packages()
-        if packages:
-            signal.emit(packages)
-
-    def set_busy(self, busy: bool) -> None:
-        self.btn_reload.setEnabled(not busy)
-
-
-# ---------------------------------------------------------------------------
-# Tab 3 — Quick Utilities
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class UtilityAction:
-    """One button on the utilities tab."""
-
-    label: str
-    description: str
-    kind: str            # "settings" | "reboot" | "clear"
-    payload: str = ""   # settings action / reboot target / package id
-    destructive: bool = False
-
-
-class UtilitiesTab(QWidget):
-    """Tactile repair actions: settings shortcuts, app-data wipes, reboots."""
-
-    settings_requested = Signal(str, str)
-    reboot_requested = Signal(str, str)
-    clear_requested = Signal(str, str)
-
-    SETTINGS_ACTIONS: tuple[UtilityAction, ...] = (
-        UtilityAction(
-            "เปิดตัวเลือกสำหรับนักพัฒนา",
-            "USB debugging, OEM unlocking",
-            "settings",
-            "APPLICATION_DEVELOPMENT_SETTINGS",
-        ),
-        UtilityAction(
-            "เปิดการเข้าถึง (Accessibility)",
-            "ดูแอปที่เปิดสิทธิ์อันตราย",
-            "settings",
-            "ACCESSIBILITY_SETTINGS",
-        ),
-        UtilityAction(
-            "เปิดการติดตั้งแอปที่ไม่รู้จัก",
-            "เปิด/ปิดการลอกติดตั้งไฟล์ APK",
-            "settings",
-            "MANAGE_UNKNOWN_APP_SOURCES",
-        ),
-        UtilityAction(
-            "เปิดการใช้งานข้อมูล",
-            "จำกัดสิทธิ์แอปที่ทำงานเบื้องหลัง",
-            "settings",
-            "USAGE_ACCESS_SETTINGS",
-        ),
-        UtilityAction(
-            "เปิดแอปทั้งหมด",
-            "ดูรายชื่อและกำหนดค่าทุกแอป",
-            "settings",
-            "MANAGE_APPLICATIONS_SETTINGS",
-        ),
-        UtilityAction(
-            "เปิดการประหยัดแบตเตอรี่",
-            "ตั้งค่าเพื่อลดพลังงาน",
-            "settings",
-            "BATTERY_SAVER_SETTINGS",
-        ),
-    )
-
-    CLEAR_ACTIONS: tuple[UtilityAction, ...] = (
-        UtilityAction(
-            "ล้างข้อมูล Chrome",
-            "ลบแคช/คุกกี้ — ต้องล็อกอินใหม่",
-            "clear",
-            "com.android.chrome",
-            destructive=True,
-        ),
-        UtilityAction(
-            "ล้างข้อมูล WebView",
-            "รีเซ็ตเครื่องมือแสดงผลเว็บของ Android",
-            "clear",
-            "com.google.android.webview",
-            destructive=True,
-        ),
-        UtilityAction(
-            "ล้างข้อมูล Samsung Internet",
-            "เฉพาะเครื่อง Samsung",
-            "clear",
-            "com.sec.android.app.sbrowser",
-            destructive=True,
-        ),
-        UtilityAction(
-            "ล้างข้อมูล Google Play Services",
-            "แก้แอปไม่อัปเดต — เปิด Play Store ใหม่ภายหลัง",
-            "clear",
-            "com.google.android.gms",
-            destructive=True,
-        ),
-    )
-
-    REBOOT_ACTIONS: tuple[UtilityAction, ...] = (
-        UtilityAction("ปิด-เปิดเครื่องปกติ", "แก้อาการค้าง", "reboot", ""),
-        UtilityAction("เข้าโหมด Recovery", "ลบข้อมูล/รีเซ็ตเครื่อง", "reboot", "recovery"),
-        UtilityAction(
-            "เข้าโหมด Bootloader",
-            "ติดไฟคอมได้ — ค้างให้กดปุ่มเปิดเครื่องค้าง",
-            "reboot",
-            "bootloader",
-        ),
-    )
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._tiles: list[QPushButton] = []
-        self._build()
-
-    def _build(self) -> None:
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 14, 0, 0)
-        outer.setSpacing(12)
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        outer.addWidget(scroll)
-
-        container = QWidget()
-        scroll.setWidget(container)
-
-        layout = QVBoxLayout(container)
-        layout.setContentsMargins(0, 0, 8, 0)
-        layout.setSpacing(12)
-
-        layout.addWidget(self._group(
-            "ทางลัดการตั้งค่าบนมือถือ",
-            "เปิดหน้าจอตั้งค่าที่ช่างใช้บ่อย โดยไม่ต้องเลื่อนเมนูเอง",
-            self.SETTINGS_ACTIONS,
-            columns=2,
-        ))
-
-        layout.addWidget(self._group(
-            "ล้างข้อมูลแอปที่ค้างบ่อย",
-            "ลบแคชและการตั้งค่าของแอป — ข้อมูลภายในแอปจะหาย",
-            self.CLEAR_ACTIONS,
-            columns=2,
-        ))
-
-        layout.addWidget(self._group(
-            "ควบคุมการเปิด-ปิดเครื่อง",
-            "ใช้เมื่อเครื่องค้าง หรือต้องการเข้าโหมดกู้คืน",
-            self.REBOOT_ACTIONS,
-            columns=3,
-        ))
-
-        layout.addStretch(1)
-
-    def _group(
-        self,
-        title: str,
-        hint: str,
-        actions: tuple[UtilityAction, ...],
-        columns: int,
-    ) -> Card:
-        card = Card()
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(16, 14, 16, 16)
-        layout.setSpacing(10)
-
-        heading = QLabel(title)
-        heading.setObjectName("CardTitle")
-        layout.addWidget(heading)
-
-        subtitle = QLabel(hint)
-        subtitle.setObjectName("SectionHint")
-        subtitle.setWordWrap(True)
-        layout.addWidget(subtitle)
-
-        grid = QGridLayout()
-        grid.setSpacing(8)
-        for index, action in enumerate(actions):
-            tile = QPushButton(f"{action.label}\n{action.description}")
-            tile.setObjectName("UtilityTile")
-            tile.setMinimumHeight(58)
-            tile.setCursor(Qt.CursorShape.PointingHandCursor)
-            tile.clicked.connect(lambda _checked=False, a=action: self._dispatch(a))
-            grid.addWidget(tile, index // columns, index % columns)
-            self._tiles.append(tile)
-        for col in range(columns):
-            grid.setColumnStretch(col, 1)
-
-        layout.addLayout(grid)
-        return card
-
-    def _dispatch(self, action: UtilityAction) -> None:
-        if action.kind == "settings":
-            self.settings_requested.emit(action.payload, action.label)
-        elif action.kind == "reboot":
-            self.reboot_requested.emit(action.payload, action.label)
-        elif action.kind == "clear":
-            self.clear_requested.emit(action.payload, action.label)
-
-    def set_busy(self, busy: bool) -> None:
-        for tile in self._tiles:
-            tile.setEnabled(not busy)
-
-
-# ---------------------------------------------------------------------------
-# Main window
-# ---------------------------------------------------------------------------
-
-
-@dataclass
 class AppState:
-    serial: str = ""
-    connected: bool = False
-    blacklist: list = field(default_factory=list)
-    blacklist_origin: str = "empty"
-    busy: bool = False
-    threat_map: dict = field(default_factory=dict)
+    """Mutable window state shared between pages."""
+
+    def __init__(self) -> None:
+        self.serial: str = ""
+        self.connected: bool = False
+        self.blacklist: list[dict] = []
+        self.db_origin: str = "empty"
+        self.entries: list[AppEntry] = []
+        self.live_snapshot: LiveSnapshot | None = None
+        self.flags = FlagStore()
 
 
 class MainWindow(QMainWindow):
-    """Owns the worker thread, the device card and the three tabs."""
+    """Sidebar + pages + log, wired to the ADB worker."""
 
-    def __init__(self, manager: AdbManager, worker: AdbWorker) -> None:
+    def __init__(
+        self,
+        manager: ExtendedAdbManager,
+        worker: ExtendedAdbWorker,
+    ) -> None:
         super().__init__()
         self.manager = manager
         self.worker = worker
         self.state = AppState()
+        self.icons = IconStore()
 
-        self.setWindowTitle(f"{config.APP_TITLE}  v{config.CURRENT_VERSION}")
-        self.resize(1240, 860)
-        self.setMinimumSize(1040, 720)
-
-        # Lives in the GUI thread; every worker-thread callback routes here.
-        self.invoker = UiInvoker(self)
-
-        # Short-lived helper threads are tracked so closeEvent can wait for
-        # them. Parenting them to this window would make Qt destroy them —
-        # while still running — at shutdown.
         self._spawned_threads: list[QThread] = []
+        self._background_workers: list[ExtendedAdbWorker] = []
+        self._busy = False
+        self._closing = False
+
+        self.setWindowTitle(f"{config.APP_NAME} — {config.APP_TITLE}")
+        self.setMinimumSize(1180, 740)
+        self.resize(1360, 860)
 
         self._build_ui()
+        self._wire_pages()
         self._connect_worker()
-        self._build_menu()
-        self._bootstrap()
+        self._install_shortcuts()
+
+        QTimer.singleShot(250, self._startup)
 
     # ------------------------------------------------------------------
-    # construction
+    # Construction
     # ------------------------------------------------------------------
 
     def _build_ui(self) -> None:
         central = QWidget()
-        self.setCentralWidget(central)
-
         root = QVBoxLayout(central)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        root.addWidget(self._build_header())
-
         body = QWidget()
-        body_layout = QVBoxLayout(body)
-        body_layout.setContentsMargins(18, 14, 18, 12)
-        body_layout.setSpacing(12)
+        row = QHBoxLayout(body)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(0)
 
-        body_layout.addWidget(self._build_device_card())
+        row.addWidget(self._build_sidebar())
 
-        self.tabs = QTabWidget()
-        self.tabs.setDocumentMode(True)
+        right = VBox(spacing=0)
+        self.stack = QStackedWidget()
+        self.scan_page = ScanPage()
+        self.live_page = LivePage()
+        self.tools_page = ToolsPage()
+        self.database_page = DatabasePage()
 
-        self.scan_tab = ScanTab()
-        self.package_tab = PackageTab()
-        self.utilities_tab = UtilitiesTab()
-
-        self.tabs.addTab(self.scan_tab, "สแกนด่วน & ล้างแอดแวร์")
-        self.tabs.addTab(self.package_tab, "จัดการแอป")
-        self.tabs.addTab(self.utilities_tab, "เครื่องมือช่าง")
-
-        body_layout.addWidget(self.tabs, 1)
-        root.addWidget(body, 1)
+        self.stack.addWidget(self.scan_page)
+        self.stack.addWidget(self.live_page)
+        self.stack.addWidget(self.tools_page)
+        self.stack.addWidget(self.database_page)
+        right.add(self.stack, 1)
 
         self.log_panel = LogPanel()
-        root.addWidget(self.log_panel)
+        right.addWidget(self.log_panel)
 
-        self._wire_tabs()
+        row.addWidget(right, 1)
+        root.addWidget(body)
+        self.setCentralWidget(central)
 
-    def _build_header(self) -> QFrame:
-        header = QFrame()
-        header.setObjectName("HeaderBar")
-        header.setFixedHeight(64)
+        self._apply_theme_styles()
 
-        layout = QHBoxLayout(header)
-        layout.setContentsMargins(18, 0, 18, 0)
-        layout.setSpacing(12)
+    def _build_sidebar(self) -> QWidget:
+        sidebar = QFrame()
+        sidebar.setObjectName("Sidebar")
+        sidebar.setFixedWidth(206)
 
-        title_box = QVBoxLayout()
-        title_box.setSpacing(0)
-        title = QLabel("ADSremovedPP")
-        title.setObjectName("AppTitle")
-        title_box.addWidget(title)
-        subtitle = QLabel("Android ADB Cleaner & Repair Utility")
-        subtitle.setObjectName("AppVersion")
-        title_box.addWidget(subtitle)
-        layout.addLayout(title_box)
+        column = QVBoxLayout(sidebar)
+        column.setContentsMargins(10, 16, 10, 10)
+        column.setSpacing(3)
 
-        layout.addStretch(1)
+        head = VBox(spacing=1, margins=(6, 0, 6, 0))
+        title = QLabel(config.APP_NAME)
+        title.setObjectName("SidebarTitle")
+        head.add(title)
+        version = QLabel(f"เวอร์ชัน {config.CURRENT_VERSION}")
+        version.setObjectName("SidebarVersion")
+        head.add(version)
+        column.addWidget(head)
+        column.addSpacing(12)
 
-        self.db_pill = QLabel("ฐานข้อมูล: กำลังโหลด")
-        self.db_pill.setObjectName("StatusPill")
-        layout.addWidget(self.db_pill)
+        self.nav_scan = NavButton("◎", "สแกน", "scan")
+        self.nav_live = NavButton("◉", "ตรวจจับแอปที่ทำงาน", "live")
+        self.nav_tools = NavButton("⚒", "เครื่องมือ", "tools")
+        self.nav_database = NavButton("⛨", "ฐานข้อมูล", "database")
 
-        self.status_pill = QLabel("ไม่ได้เชื่อมต่อ")
-        self.status_pill.setObjectName("StatusPill")
-        layout.addWidget(self.status_pill)
+        self.nav_scan.clicked.connect(lambda: self._select_page(PAGE_SCAN))
+        self.nav_live.clicked.connect(lambda: self._select_page(PAGE_LIVE))
+        self.nav_tools.clicked.connect(lambda: self._select_page(PAGE_TOOLS))
+        self.nav_database.clicked.connect(lambda: self._select_page(PAGE_DATABASE))
 
-        self.btn_connect = QPushButton("ตรวจหามือถือ")
-        self.btn_connect.setObjectName("Primary")
-        self.btn_connect.setMinimumHeight(36)
-        self.btn_connect.setMinimumWidth(140)
-        self.btn_connect.clicked.connect(lambda: self.on_probe())
-        layout.addWidget(self.btn_connect)
+        for button in (self.nav_scan, self.nav_live, self.nav_tools, self.nav_database):
+            button.setProperty("baseText", button.text())
+            column.addWidget(button)
 
-        return header
+        column.addStretch(1)
 
-    def _build_device_card(self) -> Card:
-        card = Card()
-        grid = QGridLayout(card)
-        grid.setContentsMargins(16, 14, 16, 14)
-        grid.setSpacing(10)
+        column.addWidget(Hairline())
+        column.addSpacing(6)
 
-        self.field_brand = FieldBox("ยี่ห้อ")
-        self.field_model = FieldBox("รุ่นเครื่อง")
-        self.field_android = FieldBox("เวอร์ชัน Android")
-        self.field_serial = FieldBox("Serial Number")
-        self.field_battery = FieldBox("สถานะแบตเตอรี่")
-        self.field_storage = FieldBox("พื้นที่ว่าง")
+        self.connection_label = QLabel("●  ยังไม่ได้เชื่อมต่อ")
+        self.connection_label.setObjectName("Faint")
+        self.connection_label.setContentsMargins(6, 0, 6, 0)
+        column.addWidget(self.connection_label)
 
-        for col, box in enumerate(
-            (
-                self.field_brand,
-                self.field_model,
-                self.field_android,
-                self.field_serial,
-                self.field_battery,
-                self.field_storage,
-            )
-        ):
-            grid.addWidget(box, 0, col)
-            grid.setColumnStretch(col, 1)
+        footer = HBox(spacing=4, margins=(4, 2, 2, 2))
+        self.btn_theme = make_button(
+            "◐",
+            kind="ghost",
+            tooltip="สลับธีมสว่าง / มืด",
+            on_click=self._toggle_theme,
+        )
+        footer.addWidget(self.btn_theme)
 
-        self.battery_bar = BatteryBar()
-        self.field_battery.layout().addWidget(self.battery_bar)
+        self.btn_reconnect = make_button(
+            "↻",
+            kind="ghost",
+            tooltip="ตรวจการเชื่อมต่ออีกครั้ง",
+            on_click=self.on_probe,
+        )
+        footer.addWidget(self.btn_reconnect)
+        footer.addStretch(1)
+        column.addWidget(footer)
 
-        self.battery_detail = QLabel("—")
-        self.battery_detail.setObjectName("FieldLabel")
-        self.battery_detail.setWordWrap(True)
-        self.field_battery.layout().addWidget(self.battery_detail)
+        self.nav_scan.setChecked(True)
+        return sidebar
 
-        return card
-
-    def _wire_tabs(self) -> None:
-        scan = self.scan_tab
-        scan.scan_requested.connect(self.on_scan)
+    def _wire_pages(self) -> None:
+        # -- scan page
+        scan = self.scan_page
         scan.refresh_requested.connect(self.on_probe)
-        scan.clean_requested.connect(self.on_clean_threats)
-        scan.whitelist_requested.connect(self.on_whitelist)
+        scan.scan_requested.connect(self.on_scan)
+        scan.load_all_requested.connect(self.on_load_all)
+        scan.prime_icons_requested.connect(self._prime_icons)
+        scan.uninstall_requested.connect(self._on_uninstall)
+        scan.clear_data_requested.connect(self._on_clear_data)
+        scan.force_stop_requested.connect(self._on_force_stop)
+        scan.restrict_requested.connect(self._on_restrict)
+        scan.toggle_safe_requested.connect(self._on_toggle_safe)
+        scan.toggle_danger_requested.connect(self._on_toggle_danger)
+        scan.detail_requested.connect(self._on_detail_requested)
 
-        packages = self.package_tab
-        packages.refresh_requested.connect(self.on_load_packages)
-        packages.force_uninstall_requested.connect(
-            lambda pkgs: self.on_uninstall(pkgs, force=True, label="บังคับถอนการติดตั้ง")
-        )
-        packages.normal_uninstall_requested.connect(
-            lambda pkgs: self.on_uninstall(pkgs, force=False, label="ถอนการติดตั้ง")
-        )
-        packages.clear_data_requested.connect(self.on_clear_data)
+        # -- live page
+        live = self.live_page
+        live.refresh_requested.connect(self._on_live_refresh)
+        live.force_stop_requested.connect(self._on_force_stop)
+        live.restrict_requested.connect(self._on_restrict)
+        live.open_settings_requested.connect(self._on_open_settings)
+        live.detail_requested.connect(self._on_detail_requested)
 
-        utilities = self.utilities_tab
-        utilities.settings_requested.connect(self.on_open_settings)
-        utilities.reboot_requested.connect(self.on_reboot)
-        utilities.clear_requested.connect(self.on_clear_single)
+        # -- tools page
+        tools = self.tools_page
+        tools.utility_requested.connect(self._on_utility)
+        tools.reboot_requested.connect(self._on_reboot)
+        tools.check_update_requested.connect(self._on_check_update)
+        tools.reload_database_requested.connect(self._on_reload_database)
+        tools.clear_icon_cache_requested.connect(self._on_clear_icon_cache)
+
+        # -- database page
+        database = self.database_page
+        database.status_message.connect(self.log_panel.append)
+        database.save_local_requested.connect(self._on_database_saved)
+        database.push_remote_requested.connect(self._on_database_push)
+        database.set_path(config.LOCAL_DB_PORTABLE)
 
     def _connect_worker(self) -> None:
-        self.worker.task_requested.connect(
-            self.worker._dispatch, Qt.ConnectionType.QueuedConnection
-        )
+        self.worker.task_requested.connect(self.worker._dispatch)
         self.worker.log_line.connect(self.log_panel.append)
-        self.worker.devices_ready.connect(self.on_devices_ready)
-        self.worker.device_info_ready.connect(self.on_device_info)
-        self.worker.packages_ready.connect(self.on_packages_ready)
-        self.worker.scan_finished.connect(self.on_scan_finished)
-        self.worker.uninstall_results.connect(self.on_uninstall_results)
-        self.worker.action_result.connect(self.on_action_result)
-        self.worker.task_failed.connect(self.on_task_failed)
-        self.worker.task_done.connect(self.on_task_done)
+        self.worker.devices_ready.connect(self._on_devices_ready)
+        self.worker.device_info_ready.connect(self._on_device_info)
+        self.worker.scan_finished.connect(self._on_scan_finished)
+        self.worker.uninstall_results.connect(self._on_uninstall_results)
+        self.worker.action_result.connect(self._on_action_result)
+        self.worker.task_failed.connect(self._on_task_failed)
+        self.worker.task_done.connect(self._on_task_done)
 
-    def _build_menu(self) -> None:
-        menu = self.menuBar()
+        self.worker.packages_detailed_ready.connect(self._on_packages_detailed)
+        self.worker.app_details_ready.connect(self._on_app_details)
+        self.worker.live_snapshot_ready.connect(self._on_live_snapshot)
+        self.worker.live_signals_ready.connect(self._on_live_signals)
+        self.worker.force_stop_results.connect(self._on_uninstall_results)
+        self.worker.icons_primed.connect(self._on_icons_primed)
 
-        file_menu = QMenu("ไฟล์", self)
-        reload_action = QAction("โหลดฐานข้อมูลใหม่", self)
-        reload_action.setShortcut(QKeySequence.StandardKey.Refresh)
-        reload_action.triggered.connect(lambda: self._load_blacklist(force_remote=True))
-        file_menu.addAction(reload_action)
-        file_menu.addSeparator()
-        exit_action = QAction("ออกจากโปรแกรม", self)
-        exit_action.triggered.connect(lambda: self.close())
-        file_menu.addAction(exit_action)
-        menu.addMenu(file_menu)
+    def _install_shortcuts(self) -> None:
+        QShortcut(QKeySequence("Ctrl+R"), self, activated=self.on_probe)
+        QShortcut(QKeySequence("F5"), self, activated=self.on_scan)
+        QShortcut(QKeySequence("Ctrl+1"), self, activated=lambda: self._select_page(PAGE_SCAN))
+        QShortcut(QKeySequence("Ctrl+2"), self, activated=lambda: self._select_page(PAGE_LIVE))
+        QShortcut(QKeySequence("Ctrl+3"), self, activated=lambda: self._select_page(PAGE_TOOLS))
+        QShortcut(QKeySequence("Ctrl+4"), self, activated=lambda: self._select_page(PAGE_DATABASE))
+        QShortcut(QKeySequence("Ctrl+L"), self, activated=self.log_panel.toggle_collapsed)
+        QShortcut(QKeySequence("Ctrl+D"), self, activated=self._toggle_theme)
 
-        tools_menu = QMenu("เครื่องมือ", self)
-        update_action = QAction("ตรวจหาการอัปเดต...", self)
-        update_action.triggered.connect(lambda: self.on_check_update())
-        tools_menu.addAction(update_action)
+    def _apply_theme_styles(self) -> None:
+        """Re-apply per-widget stylesheets that need palette values."""
+        tokens = styles.current()
+        self.log_panel.text.setStyleSheet(
+            f"QPlainTextEdit{{background-color:{tokens['surface_sunken']};"
+            f"border:none;border-top:1px solid {tokens['hairline']};"
+            f'font-family:{styles.FONT_MONO};font-size:11.5px;'
+            f"color:{tokens['code_text']};padding:10px 14px;}}"
+        )
+        self.log_panel.toggle.setStyleSheet(
+            "QPushButton#Ghost{background:transparent;border:none;text-align:left;"
+            f'font-family:{styles.FONT_UI};font-size:12.5px;font-weight:600;'
+            f"color:{tokens['text']};padding:2px 4px;}}"
+            "QPushButton#Ghost:hover{background:transparent;"
+            f"color:{tokens['accent']};}}"
+        )
 
-        kill_action = QAction("รีสตาร์ตเซิร์ฟเวอร์ ADB", self)
-        kill_action.triggered.connect(lambda: self.worker.request("kill_server"))
-        tools_menu.addAction(kill_action)
-        menu.addMenu(tools_menu)
+    # ------------------------------------------------------------------
+    # Startup
+    # ------------------------------------------------------------------
 
-        help_menu = QMenu("ช่วยเหลือ", self)
-        about_action = QAction("เกี่ยวกับโปรแกรม", self)
-        about_action.triggered.connect(lambda: self.on_about())
-        help_menu.addAction(about_action)
-        menu.addMenu(help_menu)
+    def _startup(self) -> None:
+        self.log_panel.append("INFO", f"{config.APP_NAME} เวอร์ชัน {config.CURRENT_VERSION}")
+        self.tools_page.set_cache_size(IconStore.cache_size_mb())
 
-    def _bootstrap(self) -> None:
         if self.manager.available:
-            self.log_panel.append("INFO", f"พบ adb ที่ {self.manager.adb_path}")
+            self.log_panel.append("OK", f"พบ adb ที่ {self.manager.adb_path}")
         else:
-            self.log_panel.append(
-                "ERROR",
-                "ไม่พบ adb — วางไฟล์ไว้ที่โฟลเดอร์ bin/ หรือติดตั้ง Android platform-tools",
-            )
-        self.log_panel.append("INFO", f"{config.APP_NAME} v{config.CURRENT_VERSION} พร้อมใช้งาน")
-        self.set_busy(False)
-        self._load_blacklist(force_remote=True)
+            self.log_panel.append("ERROR", "ไม่พบ adb.exe — วางไฟล์ไว้ที่โฟลเดอร์ bin/")
+
+        self._on_reload_database()
+        QTimer.singleShot(500, self.on_probe)
+
+    def _toggle_theme(self) -> None:
+        name = styles.toggle_theme(QApplication.instance())
+        self._apply_theme_styles()
+        self.log_panel.append("INFO", f"เปลี่ยนธีมเป็นโหมด{'สว่าง' if name == 'light' else 'มืด'}")
+        # Widgets that painted palette values directly need a repaint.
+        self.scan_page.refresh_icons()
+        self.scan_page.repaint_pills()
+        self.database_page.refresh_theme()
+        self.live_page.refresh_theme()
+        self.tools_page.refresh_theme()
 
     # ------------------------------------------------------------------
-    # database
+    # Navigation
     # ------------------------------------------------------------------
 
-    def _load_blacklist(self, force_remote: bool = False) -> None:
-        url = config.BLACKLIST_URL if force_remote else ""
-        if not force_remote:
-            self.log_panel.append("INFO", "โหลดฐานข้อมูลจากเครื่อง")
+    def _select_page(self, index: int) -> None:
+        self.stack.setCurrentIndex(index)
+        for offset, button in enumerate(
+            (self.nav_scan, self.nav_live, self.nav_tools, self.nav_database)
+        ):
+            button.setChecked(offset == index)
 
-        def work() -> None:
-            entries, origin = updater.load_blacklist(url, on_status=self._db_status)
-            self.invoker.post(self._apply_blacklist, entries, origin)
-
-        self._spawn(work)
-
-    def _db_status(self, message: str) -> None:
-        # Called from the loader thread; forward onto the GUI thread.
-        self.invoker.post(self.log_panel.append, "INFO", message)
-
-    def _apply_blacklist(self, entries: list, origin: str) -> None:
-        self.state.blacklist = entries
-        self.state.blacklist_origin = origin
-        labels = {"remote": "อินเทอร์เน็ต", "local": "ในเครื่อง", "empty": "ยังไม่มีข้อมูล"}
-        text = f"ฐานข้อมูล: {labels.get(origin, origin)} ({len(entries)})"
-        self.db_pill.setText(text)
-        if entries and self.package_tab.table.rowCount():
-            self.package_tab._threat_lookup = {
-                str(e.get("package")): str(e.get("risk", ""))
-                for e in entries
-                if e.get("package")
-            }
-            self.package_tab.set_threat_map(self.package_tab._threat_lookup)
+        if index == PAGE_LIVE and not self.state.connected:
+            self.live_page.reset()
 
     # ------------------------------------------------------------------
-    # actions
+    # Background helpers
+    # ------------------------------------------------------------------
+
+    def _spawn(self, task: str, payload: dict | None = None, hooks: dict | None = None) -> None:
+        """Run one short background job on its own parentless thread.
+
+        The thread must not be parented to the window: Qt destroys child
+        ``QThread`` objects during shutdown, which killed the interpreter
+        outright in earlier versions. Keeping them in a list and draining it in
+        :meth:`closeEvent` is the reliable pattern.
+
+        ``hooks`` maps a worker signal *name* to a slot, because the worker does
+        not exist until this method runs.
+        """
+        if self._closing:
+            return
+
+        thread = QThread()
+        worker = ExtendedAdbWorker(self.manager)
+        worker.moveToThread(thread)
+
+        thread.started.connect(
+            lambda w=worker, t=task, p=payload or {}: w._dispatch(t, p)
+        )
+        for signal_name, slot in (hooks or {}).items():
+            signal = getattr(worker, signal_name, None)
+            if signal is not None:
+                signal.connect(slot)
+
+        worker.log_line.connect(self.log_panel.append)
+        worker.task_failed.connect(self._forward_error)
+
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+
+        self._spawned_threads.append(thread)
+        thread.start()
+
+        def _cleanup() -> None:
+            if thread in self._spawned_threads:
+                self._spawned_threads.remove(thread)
+
+        thread.finished.connect(_cleanup)
+
+    def _forward_error(self, message: str) -> None:
+        self.log_panel.append("ERROR", message)
+
+    def _post(self, task: str, payload: dict | None = None) -> None:
+        """Queue a task on the shared worker thread."""
+        self.worker.request(task, payload or {})
+
+    def _set_busy(self, busy: bool) -> None:
+        self._busy = busy
+        self.scan_page.set_busy(busy)
+        self.live_page.set_busy(busy)
+        self.tools_page.set_busy(busy)
+        self.btn_reconnect.setEnabled(not busy)
+
+    # ------------------------------------------------------------------
+    # Device
     # ------------------------------------------------------------------
 
     def on_probe(self) -> None:
-        if self.state.busy:
+        if self._busy:
             return
-        self.set_busy(True)
-        self.worker.request("probe", {"serial": self.state.serial})
+        self._set_busy(True)
+        self.log_panel.append("INFO", "กำลังตรวจหามือถือ…")
+        self._post("probe", {"serial": self.state.serial})
+
+    def _on_devices_ready(self, records: list) -> None:
+        self._set_busy(False)
+        if not records:
+            self.state.connected = False
+            self.state.serial = ""
+            self._set_connected_ui(False, "")
+            self.scan_page.set_device_state(False)
+            self.live_page.reset()
+            self.connection_label.setText("●  ยังไม่ได้เชื่อมต่อ")
+            self.connection_label.setStyleSheet(
+                f"color:{styles.current()['text_faint']};font-size:11.5px;"
+            )
+            return
+
+        record = records[0]
+        self.state.connected = True
+        self.state.serial = record.serial
+        self._set_connected_ui(True, record.display_name)
+        self.scan_page.set_device_state(True, record.display_name)
+
+    def _set_connected_ui(self, connected: bool, name: str) -> None:
+        tokens = styles.current()
+        if connected:
+            self.connection_label.setText(f"●  เชื่อมต่อแล้ว · {name}")
+            self.connection_label.setStyleSheet(
+                f"color:{tokens['success']};font-size:11.5px;font-weight:600;"
+            )
+        else:
+            self.connection_label.setText("●  ยังไม่ได้เชื่อมต่อ")
+            self.connection_label.setStyleSheet(f"color:{tokens['text_faint']};font-size:11.5px;")
+
+    def _on_device_info(self, info: dict) -> None:
+        self.scan_page.set_device_info(info)
+
+    # ------------------------------------------------------------------
+    # Scanning
+    # ------------------------------------------------------------------
 
     def on_scan(self) -> None:
-        if not self._require_device_ready():
+        if not self.state.connected:
+            self.log_panel.append("WARN", "ยังไม่ได้เชื่อมต่อมือถือ — เสียบแล้วกดรีเฟรช")
             return
-        if not self.state.blacklist:
-            QMessageBox.warning(
-                self,
-                "ยังไม่มีรายการต้องระวัง",
-                "ฐานข้อมูลรายการต้องระวังยังว่างอยู่\n\n"
-                "โปรแกรมจะสแกนได้ผลเป็นศูนย์จนกว่าจะมีข้อมูล\n"
-                "เชื่อมต่ออินเทอร์เน็ตแล้วเลือก ไฟล์ > โหลดฐานข้อมูลใหม่",
-            )
-        self.set_busy(True)
-        self.scan_tab.reset()
-        self.worker.request(
-            "scan",
+        self._set_busy(True)
+        self._post(
+            "scan_detailed",
+            {
+                "serial": self.state.serial,
+                "blacklist": self.state.blacklist,
+                "flags": {p: self.state.flags.flag_of(p) for p in [e.package for e in self.scan_page.get_entries()]} or {},
+                "include_clean": False,
+            },
+        )
+
+    def on_load_all(self) -> None:
+        if not self.state.connected:
+            self.log_panel.append("WARN", "ยังไม่ได้เชื่อมต่อมือถือ")
+            return
+        self._set_busy(True)
+        self._post(
+            "scan_detailed",
+            {
+                "serial": self.state.serial,
+                "blacklist": self.state.blacklist,
+                "flags": self._flags_map(),
+                "include_clean": True,
+            },
+        )
+
+    def _flags_map(self) -> dict[str, str]:
+        mapping: dict[str, str] = {}
+        for entry in self.scan_page.get_entries():
+            state = self.state.flags.flag_of(entry.package)
+            if state:
+                mapping[entry.package] = state
+        for package in self.state.flags.safe_packages():
+            mapping.setdefault(package, "safe")
+        for package in self.state.flags.danger_packages():
+            mapping[package] = "danger"
+        return mapping
+
+    def _on_packages_detailed(self, entries: list) -> None:
+        self._set_busy(False)
+        self.state.entries = list(entries)
+        self.scan_page.set_entries(entries)
+        threats = [entry for entry in entries if entry.is_flagged_danger or entry.in_blacklist]
+        self.nav_scan.set_badge(len(threats))
+        self.tools_page.set_database_status(len(self.state.blacklist), self.state.db_origin)
+
+    def _on_scan_finished(self, threats: list, total: int) -> None:
+        self._set_busy(False)
+        self.nav_scan.set_badge(len(threats))
+
+    def _prime_icons(self, entries: list) -> None:
+        if not entries or not self.state.connected:
+            return
+        self._post(
+            "prime_icons",
+            {"serial": self.state.serial, "entries": entries, "limit": 24},
+        )
+
+    def _on_icons_primed(self, found: int, attempted: int) -> None:
+        if found:
+            self.log_panel.append("OK", f"ดึงไอคอนจริงได้ {found}/{attempted} รายการ")
+            self.scan_page.refresh_icons()
+
+    # ------------------------------------------------------------------
+    # App detail
+    # ------------------------------------------------------------------
+
+    def _on_detail_requested(self, package: str) -> None:
+        if not self.state.connected or not package:
+            return
+        self._select_page(PAGE_SCAN)
+        self._post(
+            "app_details",
+            {
+                "serial": self.state.serial,
+                "package": package,
+                "blacklist": self.state.blacklist,
+                "flags": self._flags_map(),
+            },
+        )
+
+    def _on_app_details(self, entry: AppEntry) -> None:
+        self.scan_page.apply_details(entry)
+
+    # ------------------------------------------------------------------
+    # Live monitor
+    # ------------------------------------------------------------------
+
+    def _on_live_refresh(self) -> None:
+        if not self.state.connected:
+            self.live_page.reset()
+            return
+        self._post(
+            "live_snapshot",
             {"serial": self.state.serial, "blacklist": self.state.blacklist},
         )
 
-    def on_load_packages(self) -> None:
-        if not self._require_device_ready():
-            return
-        self.set_busy(True)
-        self.worker.request(
-            "list_packages",
-            {"serial": self.state.serial, "third_party_only": False, "origin": "packages"},
-        )
+    def _on_live_snapshot(self, shot: LiveSnapshot) -> None:
+        self.state.live_snapshot = shot  # type: ignore[attr-defined]
 
-    def on_clean_threats(self, packages: list) -> None:
-        if not self._require_device_ready():
-            return
-        if not packages:
-            return
-        preview = "\n".join(f"  •  {p}" for p in packages[:12])
-        more = f"\n  ... และอีก {len(packages) - 12} รายการ" if len(packages) > 12 else ""
-        answer = QMessageBox.question(
-            self,
-            "ยืนยันการลบ",
-            f"ต้องการถอนการติดตั้ง {len(packages)} แอปต่อไปนี้:\n\n{preview}{more}\n\n"
-            "ข้อมูลภายในแอปเหล่านี้จะถูกลบถาวร ดำเนินการต่อหรือไม่?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if answer != QMessageBox.StandardButton.Yes:
-            return
-        self.set_busy(True)
-        self.worker.request(
-            "uninstall",
-            {
-                "serial": self.state.serial,
-                "packages": packages,
-                "force": False,
-                "label": "รายการต้องระวัง",
-            },
-        )
-
-    def on_uninstall(self, packages: list, force: bool, label: str) -> None:
-        if not self._require_device_ready() or not packages:
-            return
-
-        if force:
-            body = (
-                f"บังคับถอนการติดตั้ง {len(packages)} รายการ\n\n"
-                "วิธีนี้ใช้สำหรับแอประบบที่ถอนแบบปกติไม่ได้\n"
-                "แอปจะถูกซ่อนเฉพาะผู้ใช้รายนี้ (รีเซ็ตเครื่องแล้วจะกลับมา)\n\n"
-                "ดำเนินการต่อหรือไม่?"
-            )
-        else:
-            preview = "\n".join(f"  •  {p}" for p in packages[:12])
-            more = f"\n  ... และอีก {len(packages) - 12} รายการ" if len(packages) > 12 else ""
-            body = (
-                f"ถอนการติดตั้ง {len(packages)} รายการ:\n\n{preview}{more}\n\n"
-                "ข้อมูลภายในแอปจะถูกลบถาวร ดำเนินการต่อหรือไม่?"
-            )
-
-        answer = QMessageBox.question(
-            self,
-            "ยืนยันการถอนการติดตั้ง",
-            body,
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if answer != QMessageBox.StandardButton.Yes:
-            return
-
-        self.set_busy(True)
-        self.worker.request(
-            "uninstall",
-            {
-                "serial": self.state.serial,
-                "packages": packages,
-                "force": force,
-                "label": label,
-            },
-        )
-
-    def on_clear_data(self, packages: list) -> None:
-        if not self._require_device_ready() or not packages:
-            return
-        answer = QMessageBox.question(
-            self,
-            "ยืนยันการล้างข้อมูล",
-            f"ล้างข้อมูล {len(packages)} แอป\n\n"
-            "เบราว์เซอร์จะถูกออกจากระบบ และการตั้งค่าจะกลับเป็นค่าเริ่มต้น\n"
-            "ข้อมูลที่บันทึกไว้ในแอปอาจหาย ดำเนินการต่อหรือไม่?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if answer != QMessageBox.StandardButton.Yes:
-            return
-        self.set_busy(True)
-        self.worker.request(
-            "clear_data",
-            {"serial": self.state.serial, "packages": packages, "label": "แอปที่เลือก"},
-        )
-
-    def on_clear_single(self, package: str, label: str) -> None:
-        if not self._require_device_ready() or not package:
-            return
-        answer = QMessageBox.question(
-            self,
-            "ยืนยันการล้างข้อมูล",
-            f"{label}\n\nแพ็กเกจ: {package}\n\n"
-            "เบราว์เซอร์จะถูกออกจากระบบ และแอปจะกลับเป็นค่าเริ่มต้น\n"
-            "ดำเนินการต่อหรือไม่?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if answer != QMessageBox.StandardButton.Yes:
-            return
-        self.set_busy(True)
-        self.worker.request(
-            "clear_data",
-            {"serial": self.state.serial, "packages": [package], "label": label},
-        )
-
-    def on_open_settings(self, action: str, label: str) -> None:
-        if not self._require_device_ready():
-            return
-        self.worker.request(
-            "open_settings",
-            {"serial": self.state.serial, "action": action, "label": label},
-        )
-
-    def on_reboot(self, target: str, label: str) -> None:
-        if not self._require_device_ready():
-            return
-        answer = QMessageBox.question(
-            self,
-            "ยืนยันการสั่งเครื่อง",
-            f"{label}\n\n"
-            "มือถือจะหยุดการทำงานชั่วคราว กรุณาบันทึกงานที่ยังไม่เสร็จก่อน\n"
-            "ดำเนินการต่อหรือไม่?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if answer != QMessageBox.StandardButton.Yes:
-            return
-        self.worker.request(
-            "reboot",
-            {"serial": self.state.serial, "target": target, "label": label},
-        )
-
-    def on_whitelist(self, packages: list) -> None:
-        count = len(packages)
-        self.log_panel.append(
-            "WARN",
-            f"ข้าม {count} รายการในรอบการทำงานนี้ (ยังไม่บันทึกถาวร)",
-        )
-        QMessageBox.information(
-            self,
-            "รายการข้าม",
-            f"ทำเครื่องหมาย {count} รายการว่าไม่ต้องแจ้งซ้ำในรอบนี้\n\n"
-            "ถ้าต้องการให้จำถาวร ให้นำแพ็กเกจเหล่านี้ไปลบออกจากรายการต้องระวัง "
-            "ในไฟล์ local_db.json",
-        )
+    def _on_live_signals(self, signals: list) -> None:
+        self.live_page.apply_snapshot(self.state.live_snapshot, signals)  # type: ignore[attr-defined]
+        self.scan_page.set_threat_signals(signals)
+        errors = [s for s in signals if s.level == "ERROR"]
+        if errors:
+            self.nav_live.set_badge(len(errors))
 
     # ------------------------------------------------------------------
-    # worker results
+    # Actions
     # ------------------------------------------------------------------
 
-    def on_devices_ready(self, devices: list) -> None:
-        if not devices:
-            self.state.connected = False
-            self.state.serial = ""
-            self._set_status("ไม่ได้เชื่อมต่อ", styles.C["text_muted"])
-            self.field_serial.set_value("")
+    def _require_serial(self, action: str) -> str:
+        if not self.state.connected or not self.state.serial:
+            self.log_panel.append("WARN", f"ยังไม่ได้เชื่อมต่อมือถือ — ไม่สามารถ{action}")
+            return ""
+        return self.state.serial
+
+    def _on_uninstall(self, packages: list, force: bool, label: str) -> None:
+        serial = self._require_serial("ถอนการติดตั้ง")
+        if not serial:
             return
 
-        record: DeviceRecord = devices[0]
-        self.state.connected = True
-        self.state.serial = record.serial
-        self._set_status(record.state_label, styles.C["success"])
-        self.btn_connect.setText("ตรวจหาอีกครั้ง")
+        if not self._confirm_destructive(
+            f"ยืนยันการ{label}",
+            f"จะ{'ถอนการติดตั้ง' if force else 'ลบ'} {len(packages)} แอป:\n\n"
+            + "\n".join(f"  · {p}" for p in packages[:12])
+            + ("\n  …" if len(packages) > 12 else "")
+            + "\n\nข้อมูลภายในแอปจะถูกลบถาวร กู้คืนไม่ได้",
+        ):
+            return
 
-    def on_device_info(self, info: dict) -> None:
-        self.field_brand.set_value(info.get("brand") or info.get("manufacturer", ""))
-        self.field_model.set_value(info.get("model", ""))
+        self._set_busy(True)
+        self._post(
+            "uninstall",
+            {"serial": serial, "packages": packages, "force": force, "label": label},
+        )
 
-        android = info.get("android_release", "")
-        sdk = info.get("sdk_int", "")
-        self.field_android.set_value(f"{android} (API {sdk})" if sdk else android)
-        self.field_serial.set_value(info.get("serial", ""))
+    def _on_clear_data(self, packages: list, label: str) -> None:
+        serial = self._require_serial("ล้างข้อมูล")
+        if not serial:
+            return
 
-        level = info.get("battery_level")
-        state = info.get("battery_state", "")
-        if level is None:
-            self.field_battery.set_value("ไม่ทราบ")
-            self.battery_bar.set_level(None)
+        if not self._confirm_destructive(
+            "ยืนยันการล้างข้อมูล",
+            f"จะล้างข้อมูล {len(packages)} แอป:\n\n"
+            + "\n".join(f"  · {p}" for p in packages[:12])
+            + "\n\nรูปภาพ ข้อความ และบัญชีที่ล็อกอินไว้ในแอปจะหายถาวร",
+        ):
+            return
+
+        self._set_busy(True)
+        self._post("clear_data", {"serial": serial, "packages": packages, "label": label})
+
+    def _on_force_stop(self, packages: list) -> None:
+        serial = self._require_serial("สั่งหยุดแอป")
+        if not serial:
+            return
+        self._post("force_stop", {"serial": serial, "packages": packages})
+
+    def _on_restrict(self, packages: list, bucket: str) -> None:
+        serial = self._require_serial("จำกัดการทำงานเบื้องหลัง")
+        if not serial:
+            return
+        self._set_busy(True)
+        self._post("restrict", {"serial": serial, "packages": packages, "bucket": bucket})
+
+    def _on_open_settings(self, action: str, label: str) -> None:
+        serial = self._require_serial(f"เปิด{label}")
+        if not serial:
+            return
+        self._post("open_settings", {"serial": serial, "action": action, "label": label})
+
+    def _on_reboot(self, target: str, label: str) -> None:
+        serial = self._require_serial("สั่งรีสตาร์ท")
+        if not serial:
+            return
+        self._post("reboot", {"serial": serial, "target": target, "label": label})
+
+    def _on_utility(self, key: str, label: str) -> None:
+        if key == "open_db":
+            self._select_page(PAGE_DATABASE)
+            return
+
+        serial = self._require_serial(f"ใช้{label}")
+        if not serial:
+            return
+
+        mapping = {
+            "clear_one": "open_settings",
+            "wipe_cache": "wipe_cache",
+            "restart_app": "restart_apps",
+            "dev_options": "open_settings",
+            "app_settings": "open_settings",
+            "usage_access": "open_settings",
+            "package_installer": "open_settings",
+            "kill_server": "kill_server",
+            "restart_server": "start_server",
+        }
+        task = mapping.get(key)
+        if task == "open_settings":
+            action = {
+                "dev_options": "APPLICATION_DEVELOPMENT_SETTINGS",
+                "app_settings": "APPLICATION_SETTINGS",
+                "usage_access": "IGNORE_BATTERY_OPTIMIZATION_SETTINGS",
+                "package_installer": "MANAGE_UNKNOWN_APP_SOURCES",
+            }.get(key, "APPLICATION_SETTINGS")
+            self._post("open_settings", {"serial": serial, "action": action, "label": label})
+            return
+
+        if task == "wipe_cache":
+            if not self._confirm_destructive("ล้างแคชระบบ", "ล้างแคชของแอปทั้งระบบ — ค่าต่าง ๆ อาจถูกรีเซ็ต"):
+                return
+            self._post("wipe_cache", {"serial": serial})
+            return
+
+        if task == "restart_apps":
+            if not self._confirm_destructive("รีสตาร์ทแอป", "บังคับหยุดแอปทั้งหมดที่กำลังทำงาน"):
+                return
+            self._post("restart_apps", {"serial": serial})
+            return
+
+        if task in {"kill_server", "start_server"}:
+            self._post(task, {})
+            return
+
+        self.log_panel.append("INFO", f"คำสั่ง {label} ยังไม่ได้เชื่อมต่อ")
+
+    def _on_toggle_safe(self, package: str) -> None:
+        state = self.state.flags.toggle_safe(package)
+        if state:
+            self.log_panel.append("OK", f"เก็บ {package} ไว้ — จะไม่แจ้งเตือนอีก")
         else:
-            suffix = f"  ({state})" if state else ""
-            color = styles.C["danger"] if level <= 15 else styles.C["text"]
-            self.field_battery.set_value(f"{level}%{suffix}", color)
-            self.battery_bar.set_level(int(level))
+            self.log_panel.append("INFO", f"ยกเลิกการเก็บ {package}")
+        self._reapply_flags()
 
-        details = []
-        if info.get("battery_temperature"):
-            details.append(f"อุณหภูมิ {info['battery_temperature']}")
-        if info.get("abi"):
-            details.append(f"ชิป {info['abi']}")
-        self.battery_detail.setText(" · ".join(details) if details else "—")
-
-        free = info.get("storage_free_gb")
-        total = info.get("storage_total_gb")
-        if free is not None and total:
-            ratio = free / total
-            color = styles.C["danger"] if ratio < 0.10 else styles.C["text"]
-            self.field_storage.set_value(f"{free} / {total} GB", color)
-        elif free is not None:
-            self.field_storage.set_value(f"{free} GB ว่าง")
+    def _on_toggle_danger(self, package: str) -> None:
+        state = self.state.flags.toggle_danger(package)
+        if state:
+            self.log_panel.append("WARN", f"ทำเครื่องหมาย {package} ว่าอันตราย")
         else:
-            self.field_storage.set_value("—")
+            self.log_panel.append("INFO", f"ยกเลิกการทำเครื่องหมายอันตรายของ {package}")
+        self._reapply_flags()
 
-    def on_packages_ready(self, records: list, origin: str) -> None:
-        self.package_tab.set_packages(records)
-        self.log_panel.append("INFO", f"แสดง {len(records)} แอปในรายการ")
+    def _reapply_flags(self) -> None:
+        mapping = self._flags_map()
+        for entry in self.scan_page.get_entries():
+            entry.user_flag = mapping.get(entry.package, "")
+        self.scan_page.set_entries(self.scan_page.get_entries())
 
-    def on_scan_finished(self, threats: list, total: int) -> None:
-        self.scan_tab.set_scanned_total(total)
-        self.scan_tab.set_threats(threats)
-        self.state.threat_map = {r.package: r.risk for r in threats}
-        self.package_tab._threat_lookup = dict(self.state.threat_map)
-        if self.package_tab.table.rowCount():
-            self.package_tab.set_threat_map(self.package_tab._threat_lookup)
+    def _on_uninstall_results(self, results: list) -> None:
+        self._set_busy(False)
+        succeeded = [r for r in results if getattr(r, "success", False)]
+        if succeeded:
+            self.scan_page.remove_packages([r.package for r in succeeded])
+            if self._closing:
+                return
+        failed = [r for r in results if not getattr(r, "success", False)]
+        if failed and not self._closing:
+            names = ", ".join(r.package for r in failed[:5])
+            self.log_panel.append("ERROR", f"บางรายการทำไม่สำเร็จ: {names}")
 
-    def on_uninstall_results(self, results: list) -> None:
-        removed = [r.package for r in results if r.success]
-        failed = [r for r in results if not r.success]
-
-        if removed:
-            self.scan_tab.remove_rows(removed)
-            self.package_tab.remove_rows(removed)
-
-        if failed:
-            QMessageBox.warning(
-                self,
-                "บางรายการลบไม่สำเร็จ",
-                f"ลบสำเร็จ {len(removed)} รายการ แต่มี {len(failed)} รายการที่ลบไม่ได้\n\n"
-                "แอประบบบางตัวถูกผู้ผลิตล็อกไว้\n"
-                "ให้ลองใช้ปุ่ม 'บังคับถอนการติดตั้ง' ในแท็บจัดการแอป",
-            )
-
-    def on_action_result(self, label: str, ok: bool, message: str) -> None:
-        self.log_panel.append("OK" if ok else "ERROR", f"{label}: {message}")
-        if ok:
+    def _on_action_result(self, label: str, ok: bool, message: str) -> None:
+        level = "OK" if ok else "ERROR"
+        self.log_panel.append(level, message)
+        if ok and not self._closing:
             QMessageBox.information(self, label, message)
 
-    def on_task_failed(self, message: str) -> None:
+    def _on_task_failed(self, message: str) -> None:
+        self._set_busy(False)
         self.log_panel.append("ERROR", message)
-        QMessageBox.critical(self, "ทำงานไม่สำเร็จ", message)
 
-    def on_task_done(self, task: str) -> None:
-        self.set_busy(False)
+    def _on_task_done(self, task: str) -> None:
+        if not self._closing:
+            self._set_busy(False)
 
     # ------------------------------------------------------------------
-    # update flow
+    # Database
     # ------------------------------------------------------------------
 
-    def on_check_update(self) -> None:
-        self.log_panel.append("INFO", "กำลังตรวจหาเวอร์ชันใหม่...")
+    def _on_reload_database(self) -> None:
+        self.tools_page.show_progress(True)
+        self._spawn("db_load", {}, {"db_loaded": self._on_db_loaded})
 
-        def work() -> None:
-            try:
-                info = updater.check_for_update()
-            except Exception as exc:  # noqa: BLE001
-                self.invoker.post(self.log_panel.append, "ERROR", f"ตรวจอัปเดตผิดพลาด: {exc}")
-                self.invoker.post(self._update_none)
-                return
-            if info is None:
-                self.invoker.post(self._update_none)
-            else:
-                self.invoker.post(self._update_found, info)
+    def _on_database_saved(self, rows: list) -> None:
+        self.state.blacklist = list(rows)
+        self.tools_page.set_database_status(len(rows), "local")
+        self.log_panel.append("OK", "อัปเดตรายการในเครื่องเรียบร้อย")
 
-        self._spawn(work)
+    def _on_database_push(self, rows: list) -> None:
+        self.log_panel.append("INFO", "กำลังส่งรายการขึ้น GitHub…")
+        self._spawn("db_push", {"rows": rows}, {"db_pushed": self._on_db_pushed})
 
-    def _update_none(self) -> None:
-        self.log_panel.append("INFO", "ไม่พบเวอร์ชันใหม่ (หรือไม่มีอินเทอร์เน็ต)")
-        QMessageBox.information(
-            self,
-            "ตรวจสอบอัปเดต",
-            f"โปรแกรมเป็นเวอร์ชันล่าสุดแล้ว (v{config.CURRENT_VERSION})",
+    def _on_db_loaded(self, rows: list, origin: str) -> None:
+        self.state.blacklist = list(rows)
+        self.state.db_origin = origin
+        self.database_page.load(rows, origin)
+        self.tools_page.set_database_status(len(rows), origin)
+        self.tools_page.show_progress(False)
+        self.log_panel.append("OK", f"โหลดฐานข้อมูลแล้ว — {len(rows)} รายการ ({origin})")
+
+    def _on_db_pushed(self, ok: bool, message: str, url: str) -> None:
+        level = "OK" if ok else "ERROR"
+        text = (
+            message
+            if ok
+            else updater.describe_push_failure(updater.PushOutcome(ok, message, url))
+        )
+        self.log_panel.append(level, text)
+        self.database_page.status_message.emit(level, text)
+        if ok:
+            self.database_page.load(self.state.blacklist, "local")
+            self.database_page._set_dirty(False)
+
+    def _on_clear_icon_cache(self) -> None:
+        removed = IconStore.clear_cache()
+        self.tools_page.set_cache_size(IconStore.cache_size_mb())
+        self.log_panel.append("OK", f"ล้างแคชไอคอนแล้ว — ลบ {removed} ไฟล์")
+        self.scan_page.refresh_icons()
+
+    # ------------------------------------------------------------------
+    # Update
+    # ------------------------------------------------------------------
+
+    def _on_check_update(self) -> None:
+        self.tools_page.show_progress(True)
+        self.log_panel.append("INFO", "กำลังตรวจเวอร์ชันใหม่…")
+        self._spawn(
+            "check_update",
+            {},
+            {"update_found": self._on_update_found},
         )
 
-    def _update_found(self, info) -> None:
+    def _on_update_found(self, info: dict) -> None:
+        self.tools_page.show_progress(False)
+        if not info:
+            QMessageBox.information(
+                self,
+                "ไม่มีเวอร์ชันใหม่",
+                f"เวอร์ชันปัจจุบัน {config.CURRENT_VERSION} เป็นเวอร์ชันล่าสุดแล้ว",
+            )
+            return
+
+        version = str(info.get("version", "?"))
+        notes = str(info.get("notes", ""))
         answer = QMessageBox.question(
             self,
             "พบเวอร์ชันใหม่",
-            f"{updater.describe_update(info)}\n\nต้องการดาวน์โหลดและติดตั้งเลยหรือไม่?",
+            f"พบเวอร์ชัน {version} (ปัจจุบัน {config.CURRENT_VERSION})\n\n"
+            f"{notes}\n\n"
+            "ดาวน์โหลดและติดตั้งเลยหรือไม่?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
-        self._download_update(info)
 
-    def _download_update(self, info) -> None:
-        self.set_busy(True)
-        self.log_panel.append("INFO", f"กำลังดาวน์โหลด {info.version} ...")
+        self.tools_page.show_progress(True)
+        self._spawn(
+            "download_update",
+            {"info": info},
+            {"update_ready": self._on_update_ready},
+        )
 
-        def work() -> None:
-            try:
-                updater.clear_staging()
-                staged = updater.stage_download(info)
-            except Exception as exc:  # noqa: BLE001
-                self.invoker.post(self._update_failed, str(exc))
-                return
-            self.invoker.post(self._update_ready, staged, info)
-
-        self._spawn(work)
-
-    def _update_failed(self, message: str) -> None:
-        self.set_busy(False)
-        self.log_panel.append("ERROR", f"ดาวน์โหลดไม่สำเร็จ: {message}")
-        QMessageBox.critical(self, "อัปเดตไม่สำเร็จ", message)
-
-    def _update_ready(self, staged, info) -> None:
-        self.log_panel.append("OK", "ดาวน์โหลดสำเร็จ กำลังเตรียมติดตั้ง...")
-
-        if not getattr(sys, "frozen", False):
-            self.set_busy(False)
-            QMessageBox.information(
-                self,
-                "ดาวน์โหลดสำเร็จ",
-                f"ไฟล์ใหม่อยู่ที่:\n{staged}\n\n"
-                "กำลังรันแบบโค้ด โปรแกรมจึงไม่สามารถแทนที่ตัวเองได้\n"
-                "ให้แทนที่ไฟล์ .exe ด้วยมือ",
-            )
+    def _on_update_ready(self, path: str, message: str) -> None:
+        self.tools_page.show_progress(False)
+        if not path:
+            self.log_panel.append("ERROR", message)
             return
 
+        self.log_panel.append("OK", message)
+        answer = QMessageBox.question(
+            self,
+            "ดาวน์โหลดเสร็จแล้ว",
+            f"{message}\n\n"
+            "โปรแกรมจะปิดและเปิดใหม่อัตโนมัติ ปิดตอนนี้หรือไม่?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        self._launch_updater(Path(path))
+
+    def _launch_updater(self, downloaded: Path) -> None:
+        """Write and run the batch file that swaps the executable."""
         try:
-            script = updater.build_updater_script(
-                old_exe=Path(sys.executable).resolve(),
-                new_exe=staged,
-                script_path=updater.temp_script_path(),
-            )
+            current, _staging = updater.manual_update_paths()
+            script = updater.temp_script_path()
+            updater.build_updater_script(current, downloaded, script)
             updater.launch_updater(script)
-        except Exception as exc:  # noqa: BLE001
-            self.set_busy(False)
-            self.log_panel.append("ERROR", f"ติดตั้งไม่สำเร็จ: {exc}")
-            QMessageBox.critical(self, "อัปเดตไม่สำเร็จ", str(exc))
+        except Exception as exc:  # noqa: BLE001 - shutdown path
+            self.log_panel.append("ERROR", f"ติดตั้งอัปเดตไม่สำเร็จ: {exc}")
+            QMessageBox.critical(
+                self,
+                "อัปเดตไม่สำเร็จ",
+                f"เขียนสคริปต์อัปเดตไม่สำเร็จ:\n{exc}\n\n"
+                f"ดาวน์โหลดไว้ที่:\n{downloaded}\n\n"
+                "กรุณาปิดโปรแกรมแล้วเปิดไฟล์ดังกล่าวเอง",
+            )
             return
 
-        QMessageBox.information(
-            self,
-            "กำลังอัปเดต",
-            "โปรแกรมจะปิดและเปิดใหม่โดยอัตโนมัติภายในไม่กี่วินาที",
-        )
-        QApplication.instance().quit()
+        self._closing = True
+        QApplication.quit()
 
     # ------------------------------------------------------------------
-    # misc
+    # Helpers
     # ------------------------------------------------------------------
 
-    def on_about(self) -> None:
-        QMessageBox.about(
-            self,
-            "เกี่ยวกับโปรแกรม",
-            f"<b>{config.APP_NAME}</b> v{config.CURRENT_VERSION}<br><br>"
-            "เครื่องมือสำหรับช่างซ่อมมือถือ — สแกนแอปเทียบกับรายการต้องระวัง "
-            "ถอนการติดตั้ง และเรียกคำสั่งซ่อมแซมพื้นฐานผ่าน ADB<br><br>"
-            "<b>คำเตือน</b><br>"
-            "โปรแกรมนี้ตรวจจับได้ไม่ 100% กรุณาสำรองข้อมูลลูกค้าก่อนลบแอป<br>"
-            "การถอนแบบบังคับ (--user 0) ไม่ได้ลบไฟล์ระบบ "
-            "เพียงซ่อนแอปไว้ฝั่งผู้ใช้รายนั้น",
+    def _confirm_destructive(self, title: str, message: str) -> bool:
+        """Ask before anything irreversible. Returns ``True`` to proceed."""
+        box = QMessageBox(self)
+        box.setWindowTitle(title)
+        box.setText(message)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setStandardButtons(
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
-
-    def _spawn(self, fn: Callable) -> None:
-        """Run ``fn`` on a throwaway thread and return immediately.
-
-        The thread is intentionally parentless and tracked in
-        ``_spawned_threads``: a child QThread would be destroyed along with the
-        window during shutdown, and Qt aborts when a running thread is
-        destroyed.
-        """
-        thread = QThread()
-        self._spawned_threads.append(thread)
-        thread.started.connect(fn)
-        thread.finished.connect(lambda: self._retire_thread(thread))
-        thread.start()
-
-    def _retire_thread(self, thread: QThread) -> None:
-        if thread in self._spawned_threads:
-            self._spawned_threads.remove(thread)
-        thread.deleteLater()
-
-    def _wait_for_spawned(self, timeout_ms: int = 5000) -> None:
-        """Block until every helper thread finishes (or the timeout lapses)."""
-        for thread in list(self._spawned_threads):
-            if not thread.isFinished():
-                thread.quit()
-        for thread in list(self._spawned_threads):
-            if not thread.wait(timeout_ms):
-                self.log_panel.append(
-                    "WARN", "มีงานเบื้องหลังที่ยังไม่เสร็จ — กำลังบังคับปิด"
-                )
-                break
-        self._spawned_threads.clear()
-
-    def _set_status(self, text: str, color: str) -> None:
-        self.status_pill.setText(text)
-        self.status_pill.setStyleSheet(
-            f"background-color: {styles.C['surface_hi']};"
-            f"color: {color};"
-            f"border: 1px solid {styles.C['border_hi']};"
-            "border-radius: 11px; padding: 4px 14px;"
-            "font-size: 12px; font-weight: 600;"
-        )
-
-    def set_busy(self, busy: bool) -> None:
-        self.state.busy = busy
-        self.btn_connect.setEnabled(not busy)
-        self.scan_tab.set_busy(busy)
-        self.package_tab.set_busy(busy)
-        self.utilities_tab.set_busy(busy)
-        if busy:
-            self._set_status("กำลังทำงาน...", styles.C["warning"])
-
-    def _require_device_ready(self, allow_disconnected: bool = False) -> bool:
-        if self.state.connected and self.state.serial:
-            return True
-        if allow_disconnected:
-            return True
-        QMessageBox.information(
-            self,
-            "ยังไม่ได้เชื่อมต่อมือถือ",
-            "กรุณาเชื่อมต่อมือถือก่อน\n\n"
-            "1. เสียบสาย USB\n"
-            "2. เปิด ตั้งค่า > ตัวเลือกสำหรับนักพัฒนา > การแก้ไขข้อบกพร่อง USB\n"
-            "3. กดปุ่ม 'ตรวจหามือถือ'",
-        )
-        return False
+        box.setDefaultButton(QMessageBox.StandardButton.No)
+        return box.exec() == QMessageBox.StandardButton.Yes
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt naming
-        self.log_panel.append("INFO", "กำลังปิดโปรแกรม...")
-        self._wait_for_spawned()
+        self._closing = True
         try:
             self.manager.kill_server()
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 - shutting down regardless
             pass
-        event.accept()
+
+        self._wait_for_spawned()
+
+        # Wind the shared worker down too. Leaving its event loop running makes
+        # Qt print "QThread: Destroyed while thread is still running" and abort.
+        shared = self.worker.thread()
+        if shared is not None and shared.isRunning():
+            shared.quit()
+            shared.wait(3000)
+
+        super().closeEvent(event)
+
+    def _wait_for_spawned(self, timeout_ms: int = 4000) -> None:
+        """Drain helper threads so Qt never destroys a running ``QThread``."""
+        deadline = time.monotonic() + timeout_ms / 1000.0
+        for thread in list(self._spawned_threads):
+            remaining = int((deadline - time.monotonic()) * 1000)
+            if remaining <= 0:
+                break
+            thread.quit()
+            thread.wait(remaining)
+        self._spawned_threads.clear()

@@ -12,6 +12,10 @@ Two independent jobs that happen to share a file:
    manifest, offer the download, then hand the swap over to a temporary
    ``updater.bat``. A PyInstaller one-file executable physically cannot replace
    itself while running, which is exactly why the batch file exists.
+
+3. **Database publishing** — push the shared blacklist back to GitHub through
+   the Contents API so one technician's find benefits every other install.
+   :func:`push_blacklist_to_github` is the only function that writes.
 """
 
 from __future__ import annotations
@@ -21,6 +25,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
+from base64 import b64decode, b64encode
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -411,3 +417,261 @@ def clear_staging() -> None:
 def temp_script_path() -> Path:
     """Location for the throwaway updater batch file."""
     return Path(tempfile.gettempdir()) / f"{config.APP_NAME}_updater.bat"
+
+
+# ---------------------------------------------------------------------------
+# Database publishing (GitHub Contents API)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class PushOutcome:
+    """Result of publishing the blacklist back to GitHub."""
+
+    ok: bool
+    message: str
+    commit_url: str = ""
+
+    def __bool__(self) -> bool:
+        return self.ok
+
+
+#: Where a PAT can be stashed once the technician has typed it in.
+def github_token_file() -> Path:
+    """Per-user file holding the Personal Access Token."""
+    return config.user_data_dir() / "github_token.txt"
+
+
+def save_github_token(token: str) -> bool:
+    """Persist a PAT to the per-user data directory.
+
+    The file lives under ``%APPDATA%\\ADSremovedPP`` rather than in the repo, so
+    it is never bundled into an executable and never committed by accident.
+    """
+    cleaned = str(token or "").strip()
+    if not cleaned:
+        return False
+    try:
+        path = github_token_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(cleaned, encoding="utf-8")
+        if sys.platform == "win32":
+            import subprocess as _sp
+
+            _sp.run(
+                ["icacls", str(path), "/inheritance:r", "/grant:r", f"{_current_user()}:F"],
+                capture_output=True,
+                creationflags=getattr(_sp, "CREATE_NO_WINDOW", 0),
+            )
+        return True
+    except OSError:
+        return False
+
+
+def load_github_token() -> str:
+    """Read a previously stored PAT, if any."""
+    try:
+        return github_token_file().read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def clear_github_token() -> None:
+    """Forget the stored PAT."""
+    try:
+        github_token_file().unlink()
+    except OSError:
+        pass
+
+
+def _current_user() -> str:
+    """Best-effort current user name for the ``icacls`` grant."""
+    try:
+        import getpass
+
+        return getpass.getuser()
+    except Exception:  # noqa: BLE001 - purely cosmetic
+        return "*"
+
+
+def _contents_url(path: str) -> str:
+    return (
+        f"https://api.github.com/repos/{config.GITHUB_OWNER}/"
+        f"{config.GITHUB_REPO}/contents/{path}"
+    )
+
+
+def push_blacklist_to_github(
+    rows: list[dict],
+    token: str | None = None,
+    path: str = "local_db.json",
+    branch: str | None = None,
+    message: str | None = None,
+    timeout: int = config.NETWORK_TIMEOUT,
+) -> PushOutcome:
+    """Commit ``rows`` to the repository's ``path``.
+
+    Uses the GitHub Contents API, which is the simplest write path available
+    without standing up a server:
+
+    1. ``GET`` the current file to learn its blob SHA (and catch a 404, meaning
+       the file does not exist yet and must be created instead of replaced).
+    2. ``PUT`` the new content together with that SHA — GitHub rejects the
+       write if the SHA moved in the meantime, which prevents one technician
+       silently overwriting another's edit.
+
+    Returns a :class:`PushOutcome`; never raises, because a failed publish is a
+    UI message rather than a crash.
+    """
+    resolved_token = str(token or load_github_token() or "").strip()
+    if not resolved_token:
+        return PushOutcome(
+            False,
+            "ยังไม่ได้ตั้งค่า Personal Access Token — ต้องมีสิทธิ์ repo",
+        )
+
+    branch_name = branch or config.GITHUB_BRANCH
+    headers = {
+        "Authorization": f"Bearer {resolved_token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": f"{config.APP_NAME}/{config.CURRENT_VERSION}",
+    }
+
+    body_text = json.dumps(rows, ensure_ascii=False, indent=2) + "\n"
+    payload = {
+        "message": message or f"อัปเดตรายการต้องระวัง ({len(rows)} รายการ) จาก ADSremovedPP",
+        "content": b64encode(body_text.encode("utf-8")).decode("ascii"),
+        "branch": branch_name,
+    }
+
+    try:
+        current = requests.get(_contents_url(path), headers=headers, timeout=timeout)
+    except requests.RequestException as exc:
+        return PushOutcome(False, f"เชื่อมต่อ GitHub ไม่สำเร็จ: {exc.__class__.__name__}")
+
+    if current.status_code == 200:
+        try:
+            payload["sha"] = current.json()["sha"]
+        except (ValueError, KeyError):
+            return PushOutcome(False, "อ่านสถานะไฟล์บน GitHub ไม่สำเร็จ")
+        method = "PUT"
+    elif current.status_code == 404:
+        method = "PUT"  # create; no sha required
+    elif current.status_code in {401, 403}:
+        detail = ""
+        try:
+            detail = current.json().get("message", "")
+        except ValueError:
+            pass
+        hint = (
+            "Token ไม่มีสิทธิ์เขียน (ต้องเลือก scope 'repo')"
+            if "sscope" in detail.lower() or "permission" in detail.lower()
+            else detail or "สิทธิ์ไม่เพียงพอ"
+        )
+        return PushOutcome(False, f"GitHub ไม่อนุญาต: {hint}")
+    else:
+        return PushOutcome(False, f"GitHub ตอบกลับผิดปกติ ({current.status_code})")
+
+    try:
+        response = requests.put(
+            _contents_url(path),
+            headers=headers,
+            data=json.dumps(payload).encode("utf-8"),
+            timeout=timeout,
+        )
+    except requests.RequestException as exc:
+        return PushOutcome(False, f"ส่งไฟล์ไม่สำเร็จ: {exc.__class__.__name__}")
+
+    if response.status_code in {200, 201}:
+        commit_url = ""
+        try:
+            commit_url = response.json().get("content", {}).get("html_url", "")
+        except ValueError:
+            pass
+        return PushOutcome(
+            True,
+            f"ส่งขึ้น GitHub สำเร็จ — {len(rows)} รายการ (ทุกเครื่องจะได้รับในการซิงก์ครั้งถัดไป)",
+            commit_url,
+        )
+
+    detail = ""
+    try:
+        body = response.json()
+        detail = str(body.get("message", ""))
+        if isinstance(body.get("errors"), list) and body["errors"]:
+            detail += " — " + "; ".join(str(item.get("message", item)) for item in body["errors"])
+    except ValueError:
+        detail = response.text[:200]
+
+    if "sha" in detail.lower():
+        return PushOutcome(
+            False,
+            "มีคนแก้ไฟล์นี้พร้อมกัน — กด «โหลดใหม่» แล้วลองอีกครั้ง",
+        )
+    return PushOutcome(False, f"ส่งไม่สำเร็จ ({response.status_code}): {detail or 'ไม่ทราบสาเหตุ'}")
+
+
+def fetch_remote_blacklist(timeout: int = config.NETWORK_TIMEOUT) -> tuple[list[dict], str]:
+    """Fetch the shared database straight from GitHub's raw endpoint."""
+    return load_blacklist(timeout=timeout)
+
+
+def github_repo_status(timeout: int = config.NETWORK_TIMEOUT) -> tuple[bool, str]:
+    """Quick reachability probe for the configured repository."""
+    url = f"https://api.github.com/repos/{config.GITHUB_OWNER}/{config.GITHUB_REPO}"
+    try:
+        response = requests.get(url, timeout=timeout)
+    except requests.RequestException as exc:
+        return False, f"เชื่อมต่อไม่ได้ ({exc.__class__.__name__})"
+    if response.status_code == 200:
+        return True, "เชื่อมต่อ GitHub ได้"
+    if response.status_code == 404:
+        return False, "ไม่พบ repository — ตรวจชื่อผู้ใช้และชื่อ repo"
+    return False, f"ตอบกลับ ({response.status_code})"
+
+
+def describe_push_failure(outcome: PushOutcome) -> str:
+    """Turn a failed push into something a technician can act on."""
+    if outcome.ok:
+        return outcome.message
+    lowered = outcome.message.lower()
+    if "token" in lowered:
+        return (
+            f"{outcome.message}\n\n"
+            "สร้างได้ที่ github.com/settings/tokens\n"
+            "เลือก 'Generate new token (classic)' แล้วติ๊ก scope 'repo'"
+        )
+    if "โหลดใหม่" in outcome.message:
+        return (
+            f"{outcome.message}\n\n"
+            "เปิดหน้าฐานข้อมูล → กด «↻ โหลดใหม่» แล้วทำรายการของคุณใหม่อีกครั้ง"
+        )
+    return outcome.message
+
+
+#: Kept for the auto-updater flow, which waits before swapping the binary.
+def wait_for_process_exit(pid: int, timeout: float = 10.0, interval: float = 0.25) -> bool:
+    """Poll until ``pid`` disappears or ``timeout`` elapses."""
+    import os
+
+    deadline = time.monotonic() + max(timeout, 0.0)
+    while time.monotonic() < deadline:
+        if not _pid_alive(pid):
+            return True
+        time.sleep(max(interval, 0.05))
+    return not _pid_alive(pid)
+
+
+def _pid_alive(pid: int) -> bool:
+    import os
+
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except (OSError, ProcessLookupError):
+        return False
+    except Exception:  # noqa: BLE001 - Windows raises odd variants
+        return True
+    return True

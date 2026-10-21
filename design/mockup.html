@@ -1,0 +1,870 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ADSremovedPP — Clean Pro Design Mockup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#F5F5F7;
+  --surface:#FFFFFF;
+  --surface-2:#FBFBFD;
+  --border:rgba(0,0,0,.08);
+  --border-2:rgba(0,0,0,.05);
+  --text:#1D1D1F;
+  --text-2:#6E6E73;
+  --text-3:#86868B;
+  --accent:#0071E3;
+  --accent-hi:#0077ED;
+  --success:#34C759;
+  --warning:#FF9F0A;
+  --danger:#FF3B30;
+  --shadow-1:0 1px 2px rgba(0,0,0,.04),0 0 0 .5px rgba(0,0,0,.03);
+  --shadow-2:0 4px 16px rgba(0,0,0,.06),0 0 0 .5px rgba(0,0,0,.04);
+  --shadow-3:0 12px 40px rgba(0,0,0,.10),0 0 0 .5px rgba(0,0,0,.05);
+  --r-card:14px;
+  --r-btn:9px;
+  --r-pill:100px;
+}
+[data-theme="dark"]{
+  --bg:#1C1C1E;
+  --surface:#2C2C2E;
+  --surface-2:#262628;
+  --border:rgba(255,255,255,.10);
+  --border-2:rgba(255,255,255,.06);
+  --text:#F5F5F7;
+  --text-2:#98989D;
+  --text-3:#7C7C80;
+  --accent:#0A84FF;
+  --accent-hi:#3D9BFF;
+  --success:#30D158;
+  --warning:#FF9F0A;
+  --danger:#FF453A;
+  --shadow-1:0 1px 2px rgba(0,0,0,.3),0 0 0 .5px rgba(255,255,255,.06);
+  --shadow-2:0 4px 16px rgba(0,0,0,.4),0 0 0 .5px rgba(255,255,255,.07);
+  --shadow-3:0 12px 40px rgba(0,0,0,.5),0 0 0 .5px rgba(255,255,255,.08);
+}
+*{margin:0;padding:0;box-sizing:border-box;}
+body{
+  font-family:'Inter','Segoe UI Variable Display','Segoe UI',system-ui,-apple-system,sans-serif;
+  background:var(--bg);
+  color:var(--text);
+  padding:48px 24px 96px;
+  transition:background .3s ease,color .3s ease;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1280px;margin:0 auto;}
+
+/* ---------- page header ---------- */
+.page-head{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:40px;gap:24px;flex-wrap:wrap;}
+.page-head h1{font-size:40px;font-weight:700;letter-spacing:-.02em;line-height:1.1;}
+.page-head p{color:var(--text-2);font-size:16px;margin-top:8px;max-width:620px;line-height:1.6;}
+.theme-toggle{
+  background:var(--surface);border:1px solid var(--border);color:var(--text);
+  padding:9px 16px;border-radius:var(--r-pill);font-size:13px;font-weight:600;
+  cursor:pointer;box-shadow:var(--shadow-1);transition:all .18s cubic-bezier(.4,0,.2,1);
+  font-family:inherit;
+}
+.theme-toggle:hover{transform:translateY(-1px);box-shadow:var(--shadow-2);}
+
+.section-label{
+  font-size:12px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--text-3);margin:64px 0 20px;display:flex;align-items:center;gap:10px;
+}
+.section-label::after{content:'';flex:1;height:1px;background:var(--border-2);}
+
+/* ---------- window ---------- */
+.window{
+  background:var(--surface);
+  border-radius:16px;
+  box-shadow:var(--shadow-3);
+  overflow:hidden;
+  border:1px solid var(--border-2);
+  margin-bottom:40px;
+}
+.titlebar{
+  height:48px;
+  background:var(--surface-2);
+  border-bottom:1px solid var(--border-2);
+  display:flex;align-items:center;
+  padding:0 16px;
+  gap:8px;
+  -webkit-app-region:drag;
+}
+.lights{display:flex;gap:8px;}
+.light{width:12px;height:12px;border-radius:50%;}
+.l-r{background:#FF5F57}.l-y{background:#FEBC2E}.l-g{background:#28C840}
+.titlebar-title{
+  flex:1;text-align:center;font-size:13px;font-weight:600;color:var(--text-2);
+  letter-spacing:-.01em;
+}
+.titlebar-right{display:flex;gap:4px;align-items:center;min-width:60px;justify-content:flex-end;}
+.tb-btn{
+  width:28px;height:28px;border-radius:7px;border:none;background:transparent;
+  color:var(--text-3);cursor:pointer;display:grid;place-items:center;
+  transition:background .15s;
+}
+.tb-btn:hover{background:var(--border-2);color:var(--text);}
+
+.win-body{display:flex;min-height:640px;}
+
+/* ---------- sidebar ---------- */
+.sidebar{
+  width:212px;flex-shrink:0;
+  background:var(--surface-2);
+  border-right:1px solid var(--border-2);
+  padding:14px 10px;
+  display:flex;flex-direction:column;gap:2px;
+}
+.sb-head{padding:8px 10px 14px;}
+.sb-title{font-size:15px;font-weight:700;letter-spacing:-.01em;}
+.sb-sub{font-size:11px;color:var(--text-3);margin-top:2px;}
+.sb-item{
+  display:flex;align-items:center;gap:10px;
+  padding:8px 10px;border-radius:8px;
+  font-size:13.5px;font-weight:500;color:var(--text-2);
+  cursor:pointer;user-select:none;
+  transition:background .15s,color .15s;
+}
+.sb-item:hover{background:var(--border-2);color:var(--text);}
+.sb-item.active{background:var(--accent);color:#fff;}
+.sb-item .ico{width:18px;height:18px;display:grid;place-items:center;flex-shrink:0;}
+.sb-badge{
+  margin-left:auto;font-size:10.5px;font-weight:700;
+  background:var(--danger);color:#fff;
+  padding:1px 6px;border-radius:var(--r-pill);
+}
+.sb-item.active .sb-badge{background:rgba(255,255,255,.28);}
+.sb-spacer{flex:1;}
+.sb-foot{padding:8px 10px 4px;border-top:1px solid var(--border-2);margin-top:8px;}
+
+/* ---------- content ---------- */
+.content{flex:1;display:flex;flex-direction:column;min-width:0;background:var(--surface);}
+.content-head{padding:20px 24px 14px;}
+.ch-title{font-size:22px;font-weight:700;letter-spacing:-.02em;}
+.ch-desc{font-size:13px;color:var(--text-2);margin-top:3px;}
+.content-body{flex:1;padding:0 24px 20px;overflow:hidden;}
+
+/* ---------- device strip ---------- */
+.device-strip{display:flex;gap:10px;margin-bottom:16px;}
+.dchip{
+  flex:1;
+  background:var(--surface-2);
+  border:1px solid var(--border-2);
+  border-radius:var(--r-card);
+  padding:12px 14px;
+  display:flex;align-items:center;gap:11px;
+  box-shadow:var(--shadow-1);
+}
+.dchip .d-ico{
+  width:34px;height:34px;border-radius:9px;
+  display:grid;place-items:center;flex-shrink:0;
+  font-size:16px;
+}
+.dchip .d-lbl{font-size:11px;color:var(--text-3);font-weight:500;letter-spacing:.01em;}
+.dchip .d-val{font-size:14px;font-weight:600;margin-top:1px;letter-spacing:-.01em;}
+
+.bar-wrap{margin-bottom:4px;}
+.bar{height:5px;border-radius:3px;background:var(--border);overflow:hidden;margin-top:5px;}
+.bar > i{display:block;height:100%;border-radius:3px;}
+
+/* ---------- toolbar ---------- */
+.toolbar{display:flex;gap:10px;align-items:center;margin-bottom:12px;}
+.search{
+  flex:1;position:relative;
+}
+.search input{
+  width:100%;height:34px;
+  background:var(--surface-2);
+  border:1px solid var(--border);
+  border-radius:var(--r-btn);
+  padding:0 12px 0 34px;
+  font-size:13px;font-family:inherit;color:var(--text);
+  transition:border-color .18s,box-shadow .18s,background .18s;
+}
+.search input::placeholder{color:var(--text-3);}
+.search input:focus{
+  outline:none;border-color:var(--accent);
+  box-shadow:0 0 0 3.5px color-mix(in srgb,var(--accent) 18%,transparent);
+  background:var(--surface);
+}
+.search .s-ico{
+  position:absolute;left:11px;top:50%;transform:translateY(-50%);
+  color:var(--text-3);pointer-events:none;display:grid;
+}
+.seg{
+  display:flex;background:var(--surface-2);
+  border:1px solid var(--border);
+  border-radius:var(--r-btn);padding:2px;gap:2px;
+}
+.seg button{
+  border:none;background:transparent;
+  padding:5px 11px;border-radius:7px;
+  font-size:12.5px;font-weight:500;color:var(--text-2);
+  cursor:pointer;font-family:inherit;
+  transition:background .15s,color .15s,box-shadow .15s;
+  white-space:nowrap;
+}
+.seg button:hover{color:var(--text);}
+.seg button.on{background:var(--surface);color:var(--text);box-shadow:var(--shadow-1);font-weight:600;}
+
+.btn{
+  height:34px;padding:0 15px;
+  border-radius:var(--r-btn);
+  border:1px solid transparent;
+  font-size:13px;font-weight:600;font-family:inherit;
+  cursor:pointer;
+  display:inline-flex;align-items:center;gap:7px;
+  transition:transform .15s cubic-bezier(.4,0,.2,1),box-shadow .18s,background .18s,opacity .18s;
+  white-space:nowrap;
+}
+.btn:active{transform:scale(.97);}
+.btn-primary{background:var(--accent);color:#fff;box-shadow:0 1px 3px color-mix(in srgb,var(--accent) 35%,transparent);}
+.btn-primary:hover{background:var(--accent-hi);box-shadow:0 4px 14px color-mix(in srgb,var(--accent) 40%,transparent);transform:translateY(-1px);}
+.btn-sec{background:var(--surface-2);color:var(--text);border-color:var(--border);}
+.btn-sec:hover{background:var(--surface);box-shadow:var(--shadow-1);transform:translateY(-1px);}
+.btn-danger{background:var(--danger);color:#fff;}
+.btn-danger:hover{box-shadow:0 4px 14px color-mix(in srgb,var(--danger) 40%,transparent);transform:translateY(-1px);}
+.btn[disabled]{opacity:.35;pointer-events:none;}
+.btn-sm{height:29px;padding:0 11px;font-size:12px;}
+
+/* ---------- table ---------- */
+.table-card{
+  background:var(--surface);
+  border:1px solid var(--border-2);
+  border-radius:var(--r-card);
+  overflow:hidden;
+  box-shadow:var(--shadow-1);
+}
+.tbl-head{
+  display:grid;
+  grid-template-columns:34px 40px 1fr 150px 104px 92px;
+  padding:9px 14px;
+  background:var(--surface-2);
+  border-bottom:1px solid var(--border-2);
+  font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;
+  color:var(--text-3);
+}
+.tbl-row{
+  display:grid;
+  grid-template-columns:34px 40px 1fr 150px 104px 92px;
+  padding:9px 14px;
+  border-bottom:1px solid var(--border-2);
+  align-items:center;
+  cursor:pointer;
+  transition:background .13s;
+}
+.tbl-row:last-child{border-bottom:none;}
+.tbl-row:hover{background:var(--surface-2);}
+.tbl-row.sel{background:color-mix(in srgb,var(--accent) 7%,transparent);}
+.tbl-row.sel:hover{background:color-mix(in srgb,var(--accent) 11%,transparent);}
+
+.cbx{
+  width:16px;height:16px;border-radius:4.5px;
+  border:1.5px solid var(--border);background:var(--surface);
+  display:grid;place-items:center;
+  transition:all .15s cubic-bezier(.4,0,.2,1);
+}
+.tbl-row.sel .cbx{background:var(--accent);border-color:var(--accent);}
+.cbx svg{opacity:0;transform:scale(.5);transition:all .15s cubic-bezier(.34,1.56,.64,1);}
+.tbl-row.sel .cbx svg{opacity:1;transform:scale(1);}
+
+.app-ico{
+  width:34px;height:34px;border-radius:9px;
+  display:grid;place-items:center;font-size:16px;
+  box-shadow:0 1px 3px rgba(0,0,0,.1);
+}
+.app-name{font-size:13.5px;font-weight:600;letter-spacing:-.01em;}
+.app-pkg{font-size:11.5px;color:var(--text-3);font-family:'SF Mono','Cascadia Mono',Consolas,monospace;margin-top:1px;}
+
+.pill{
+  display:inline-flex;align-items:center;gap:5px;
+  padding:3px 9px;border-radius:var(--r-pill);
+  font-size:11.5px;font-weight:600;
+  white-space:nowrap;
+}
+.pill .dot{width:6px;height:6px;border-radius:50%;flex-shrink:0;}
+.p-critical{background:color-mix(in srgb,var(--danger) 13%,transparent);color:var(--danger);}
+.p-critical .dot{background:var(--danger);}
+.p-high{background:color-mix(in srgb,#FF9500 14%,transparent);color:#D9700A;}
+.p-high .dot{background:#FF9500;}
+.p-medium{background:color-mix(in srgb,var(--warning) 15%,transparent);color:#B87700;}
+.p-medium .dot{background:var(--warning);}
+.p-low{background:color-mix(in srgb,#5AC8FA 15%,transparent);color:#0A84C4;}
+.p-low .dot{background:#5AC8FA;}
+[data-theme="dark"] .p-high{color:#FF9F0A;}
+[data-theme="dark"] .p-medium{color:#FFB340;}
+[data-theme="dark"] .p-low{color:#5AC8FA;}
+
+.src{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:500;}
+.src .sdot{width:6px;height:6px;border-radius:50%;}
+.src-play{color:var(--success);}
+.src-play .sdot{background:var(--success);}
+.src-oem{color:#0A84C4;}
+.src-oem .sdot{background:#0A84C4;}
+.src-side{color:var(--danger);}
+.src-side .sdot{background:var(--danger);}
+.src-unknown{color:var(--text-3);}
+.src-unknown .sdot{background:var(--text-3);}
+
+.row-act{display:flex;gap:4px;justify-content:flex-end;opacity:0;transition:opacity .15s;}
+.tbl-row:hover .row-act{opacity:1;}
+.icon-btn{
+  width:26px;height:26px;border-radius:7px;
+  border:1px solid var(--border);
+  background:var(--surface);color:var(--text-2);
+  display:grid;place-items:center;cursor:pointer;
+  transition:all .15s;
+}
+.icon-btn:hover{background:var(--danger);color:#fff;border-color:var(--danger);}
+.icon-btn.n:hover{background:var(--warning);border-color:var(--warning);color:#fff;}
+
+/* ---------- selection bar ---------- */
+.selbar{
+  margin-top:12px;
+  background:var(--surface-2);
+  border:1px solid var(--border-2);
+  border-radius:var(--r-card);
+  padding:11px 14px;
+  display:flex;align-items:center;gap:10px;
+  box-shadow:var(--shadow-1);
+}
+.selbar .cnt{font-size:13px;font-weight:600;}
+.selbar .cnt b{color:var(--accent);}
+.selbar .sp{flex:1;}
+
+/* ---------- live monitor ---------- */
+.live{
+  margin-top:12px;
+  border-radius:var(--r-card);
+  border:1px solid var(--border-2);
+  background:var(--surface-2);
+  overflow:hidden;
+  box-shadow:var(--shadow-1);
+}
+.live-head{
+  display:flex;align-items:center;gap:8px;
+  padding:10px 14px;
+  border-bottom:1px solid var(--border-2);
+}
+.live-dot{
+  width:7px;height:7px;border-radius:50%;background:var(--success);
+  box-shadow:0 0 0 0 color-mix(in srgb,var(--success) 60%,transparent);
+  animation:pulse 2s infinite;
+}
+@keyframes pulse{
+  0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--success) 55%,transparent);}
+  70%{box-shadow:0 0 0 7px transparent;}
+  100%{box-shadow:0 0 0 0 transparent;}
+}
+.live-title{font-size:13px;font-weight:600;}
+.live-upd{margin-left:auto;font-size:11.5px;color:var(--text-3);font-variant-numeric:tabular-nums;}
+.live-grid{display:grid;grid-template-columns:repeat(3,1fr);}
+.lg{
+  padding:12px 14px;
+  border-right:1px solid var(--border-2);
+}
+.lg:last-child{border-right:none;}
+.lg-lbl{font-size:11px;color:var(--text-3);font-weight:500;display:flex;align-items:center;gap:5px;}
+.lg-val{font-size:13.5px;font-weight:600;margin-top:4px;font-family:'SF Mono','Cascadia Mono',Consolas,monospace;letter-spacing:-.02em;}
+.lg-val.alert{color:var(--danger);}
+.lg-val.none{color:var(--success);}
+.lg-val.mono-sm{font-size:12.5px;}
+
+/* ---------- app info panel ---------- */
+.info-panel{
+  margin-top:12px;
+  border-radius:var(--r-card);
+  border:1px solid var(--border-2);
+  background:var(--surface-2);
+  overflow:hidden;
+  box-shadow:var(--shadow-1);
+}
+.ip-head{
+  display:flex;align-items:center;gap:11px;
+  padding:12px 14px;border-bottom:1px solid var(--border-2);
+}
+.ip-body{padding:13px 14px;display:grid;grid-template-columns:repeat(4,1fr);gap:14px;}
+.ipi-lbl{font-size:11px;color:var(--text-3);font-weight:500;}
+.ipi-val{font-size:13px;font-weight:600;margin-top:3px;}
+.ipi-val.mono{font-family:'SF Mono','Cascadia Mono',Consolas,monospace;font-size:11.5px;letter-spacing:-.02em;}
+.perm-list{display:flex;flex-wrap:wrap;gap:4px;margin-top:7px;grid-column:1/-1;}
+.perm{
+  font-size:10.5px;font-weight:600;
+  background:color-mix(in srgb,var(--danger) 10%,transparent);
+  color:var(--danger);
+  padding:2.5px 7px;border-radius:6px;
+  font-family:'SF Mono','Cascadia Mono',Consolas,monospace;
+}
+.perm.warn{background:color-mix(in srgb,var(--warning) 13%,transparent);color:#B87700;}
+[data-theme="dark"] .perm.warn{color:#FFB340;}
+
+/* ---------- log ---------- */
+.log{
+  margin-top:12px;
+  background:var(--surface-2);
+  border:1px solid var(--border-2);
+  border-radius:var(--r-card);
+  overflow:hidden;
+  box-shadow:var(--shadow-1);
+}
+.log-head{
+  display:flex;align-items:center;gap:8px;
+  padding:9px 14px;border-bottom:1px solid var(--border-2);
+}
+.log-title{font-size:12.5px;font-weight:600;}
+.log-body{
+  padding:10px 14px;
+  font-family:'SF Mono','Cascadia Mono',Consolas,monospace;
+  font-size:11.5px;line-height:1.75;
+  max-height:118px;overflow:hidden;
+}
+.log-line{display:flex;gap:9px;}
+.log-t{color:var(--text-3);flex-shrink:0;font-variant-numeric:tabular-nums;}
+.log-ok{color:var(--success);}
+.log-info{color:var(--accent);}
+.log-warn{color:var(--warning);}
+.log-err{color:var(--danger);}
+.log-m{color:var(--text-2);}
+
+/* ---------- showcase ---------- */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:20px;}
+.panel{
+  background:var(--surface);border:1px solid var(--border-2);
+  border-radius:var(--r-card);padding:20px;box-shadow:var(--shadow-1);
+}
+.panel h3{font-size:15px;font-weight:700;margin-bottom:4px;letter-spacing:-.01em;}
+.panel .pd{font-size:12.5px;color:var(--text-2);margin-bottom:16px;line-height:1.55;}
+.row{display:flex;gap:9px;flex-wrap:wrap;align-items:center;margin-bottom:10px;}
+.row:last-child{margin-bottom:0;}
+.tok-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(112px,1fr));gap:11px;}
+.tok{border-radius:9px;overflow:hidden;border:1px solid var(--border-2);}
+.tok .sw{height:52px;}
+.tok .nm{font-size:11px;padding:6px 8px;font-weight:600;font-family:'SF Mono','Cascadia Mono',monospace;}
+.tok .hx{font-size:10px;padding:0 8px 7px;color:var(--text-3);font-family:'SF Mono','Cascadia Mono',monospace;}
+
+.note{
+  background:color-mix(in srgb,var(--accent) 6%,transparent);
+  border:1px solid color-mix(in srgb,var(--accent) 20%,transparent);
+  border-radius:var(--r-card);padding:16px 18px;margin-bottom:24px;
+}
+.note h4{font-size:14px;font-weight:700;margin-bottom:7px;display:flex;align-items:center;gap:7px;}
+.note p{font-size:13px;color:var(--text-2);line-height:1.65;}
+.note code{
+  background:var(--surface);padding:1.5px 6px;border-radius:5px;
+  font-family:'SF Mono','Cascadia Mono',monospace;font-size:11.5px;
+  border:1px solid var(--border-2);
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<div class="page-head">
+  <div>
+    <h1>ADSremovedPP</h1>
+    <p>Clean Pro — แนวทาง UI ใหม่สำหรับ v0.2 · Apple-inspired · minimal · โฟกัสความชัดเจน ไม่รก ดูแพง</p>
+  </div>
+  <button class="theme-toggle" onclick="toggleTheme()">◐ สลับ Light / Dark</button>
+</div>
+
+<!-- ============ หน้าต่างหลัก ============ -->
+<div class="section-label">หน้าต่างหลัก — Scan</div>
+
+<div class="window">
+  <div class="titlebar">
+    <div class="lights"><div class="light l-r"></div><div class="light l-y"></div><div class="light l-g"></div></div>
+    <div class="titlebar-title">ADSremovedPP</div>
+    <div class="titlebar-right">
+      <div class="tb-btn">⌄</div>
+    </div>
+  </div>
+
+  <div class="win-body">
+    <!-- sidebar -->
+    <div class="sidebar">
+      <div class="sb-head">
+        <div class="sb-title">ADSremovedPP</div>
+        <div class="sb-sub">v0.2.0</div>
+      </div>
+
+      <div class="sb-item active">
+        <div class="ico">◎</div> สแกน
+      </div>
+      <div class="sb-item">
+        <div class="ico">◉</div> ตรวจจับแอปที่ทำงาน
+        <div class="sb-badge">2</div>
+      </div>
+      <div class="sb-item">
+        <div class="ico">⚒</div> เครื่องมือ
+      </div>
+      <div class="sb-item">
+        <div class="ico">⛨</div> ฐานข้อมูล
+      </div>
+
+      <div class="sb-spacer"></div>
+
+      <div class="sb-item">
+        <div class="ico">◍</div> วิธีใช้
+      </div>
+      <div class="sb-foot">
+        <div class="sb-item">
+          <div class="ico">⚙</div> ตั้งค่า
+        </div>
+      </div>
+    </div>
+
+    <!-- content -->
+    <div class="content">
+      <div class="content-head">
+        <div class="ch-title">สแกนแอปที่ต้องระวัง</div>
+        <div class="ch-desc">ตรวจพบ 2 แอปที่ควรระวัง · 318 แอปทั้งหมดบนเครื่อง</div>
+      </div>
+
+      <div class="content-body">
+
+        <!-- device strip -->
+        <div class="device-strip">
+          <div class="dchip">
+            <div class="d-ico" style="background:color-mix(in srgb,var(--accent) 13%,transparent)">▤</div>
+            <div>
+              <div class="d-lbl">อุปกรณ์</div>
+              <div class="d-val">Samsung SM-A546E</div>
+            </div>
+          </div>
+          <div class="dchip">
+            <div class="d-ico" style="background:color-mix(in srgb,var(--success) 13%,transparent)">◈</div>
+            <div>
+              <div class="d-lbl">ระบบปฏิบัติการ</div>
+              <div class="d-val">Android 14</div>
+            </div>
+          </div>
+          <div class="dchip">
+            <div class="d-ico" style="background:color-mix(in srgb,var(--warning) 14%,transparent)">◐</div>
+            <div>
+              <div class="d-lbl">แบตเตอรี่</div>
+              <div class="d-val">78%</div>
+              <div class="bar"><i style="width:78%;background:var(--success)"></i></div>
+            </div>
+          </div>
+          <div class="dchip">
+            <div class="d-ico" style="background:color-mix(in srgb,#5AC8FA 14%,transparent)">▦</div>
+            <div>
+              <div class="d-lbl">พื้นที่ว่าง</div>
+              <div class="d-val">45.2 GB</div>
+              <div class="bar"><i style="width:45%;background:#5AC8FA"></i></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- toolbar -->
+        <div class="toolbar">
+          <div class="search">
+            <div class="s-ico">⌕</div>
+            <input placeholder="ค้นหาชื่อแอป หรือ package name…">
+          </div>
+          <div class="seg">
+            <button class="on">ทั้งหมด</button>
+            <button>อันตราย</button>
+            <button>ต้องระวัง</button>
+          </div>
+          <div class="seg">
+            <button class="on">ทุกแหล่งที่มา</button>
+            <button>Sideload</button>
+          </div>
+          <button class="btn btn-primary">◎ สแกนใหม่</button>
+        </div>
+
+        <!-- table -->
+        <div class="table-card">
+          <div class="tbl-head">
+            <div></div><div></div><div>แอปพลิเคชัน</div>
+            <div>ประเภท</div><div>ความเสี่ยง</div><div style="text-align:right">แหล่งที่มา</div>
+          </div>
+
+          <div class="tbl-row sel">
+            <div class="cbx"><svg width="10" height="10" viewBox="0 0 10 10"><path d="M1 5l2.5 2.5L9 2" stroke="#fff" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+            <div class="app-ico" style="background:linear-gradient(135deg,#ff6b6b,#ff4757)">🧹</div>
+            <div>
+              <div class="app-name">Virus Cleaner Pro</div>
+              <div class="app-pkg">com.fake.cleaner</div>
+            </div>
+            <div style="font-size:12.5px;color:var(--text-2)">Adware</div>
+            <div><span class="pill p-critical"><span class="dot"></span>สูงมาก</span></div>
+            <div style="display:flex;align-items:center;gap:8px;justify-content:flex-end">
+              <span class="src src-side"><span class="sdot"></span>Sideload</span>
+            </div>
+          </div>
+
+          <div class="tbl-row sel">
+            <div class="cbx"><svg width="10" height="10" viewBox="0 0 10 10"><path d="M1 5l2.5 2.5L9 2" stroke="#fff" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+            <div class="app-ico" style="background:linear-gradient(135deg,#ffa502,#ff7f00)">⚡</div>
+            <div>
+              <div class="app-name">Battery Saver Pro</div>
+              <div class="app-pkg">com.battery.saver.pro</div>
+            </div>
+            <div style="font-size:12.5px;color:var(--text-2)">PUA</div>
+            <div><span class="pill p-high"><span class="dot"></span>สูง</span></div>
+            <div style="display:flex;align-items:center;gap:8px;justify-content:flex-end">
+              <span class="src src-play"><span class="sdot"></span>Play Store</span>
+            </div>
+          </div>
+
+          <div class="tbl-row">
+            <div class="cbx"><svg width="10" height="10" viewBox="0 0 10 10"><path d="M1 5l2.5 2.5L9 2" stroke="#fff" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+            <div class="app-ico" style="background:linear-gradient(135deg,#2ed573,#1abc9c)">🚀</div>
+            <div>
+              <div class="app-name">Speed Booster Lite</div>
+              <div class="app-pkg">com.speedbooster.lite</div>
+            </div>
+            <div style="font-size:12.5px;color:var(--text-2)">Junk</div>
+            <div><span class="pill p-medium"><span class="dot"></span>ปานกลาง</span></div>
+            <div style="display:flex;align-items:center;gap:8px;justify-content:flex-end">
+              <span class="src src-play"><span class="sdot"></span>Play Store</span>
+            </div>
+          </div>
+
+          <div class="tbl-row">
+            <div class="cbx"><svg width="10" height="10" viewBox="0 0 10 10"><path d="M1 5l2.5 2.5L9 2" stroke="#fff" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+            <div class="app-ico" style="background:linear-gradient(135deg,#a29bfe,#6c5ce7)">🌐</div>
+            <div>
+              <div class="app-name">Secure Fast Browser</div>
+              <div class="app-pkg">com.browser.secure.fast</div>
+            </div>
+            <div style="font-size:12.5px;color:var(--text-2)">Adware</div>
+            <div><span class="pill p-high"><span class="dot"></span>สูง</span></div>
+            <div style="display:flex;align-items:center;gap:8px;justify-content:flex-end">
+              <span class="src src-oem"><span class="sdot"></span>Galaxy Store</span>
+            </div>
+          </div>
+
+          <div class="tbl-row">
+            <div class="cbx"><svg width="10" height="10" viewBox="0 0 10 10"><path d="M1 5l2.5 2.5L9 2" stroke="#fff" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+            <div class="app-ico" style="background:linear-gradient(135deg,#74b9ff,#0984e3)">🎬</div>
+            <div>
+              <div class="app-name">HD Video Player Free</div>
+              <div class="app-pkg">com.video.player.hd.free</div>
+            </div>
+            <div style="font-size:12.5px;color:var(--text-2)">Adware</div>
+            <div><span class="pill p-medium"><span class="dot"></span>ปานกลาง</span></div>
+            <div style="display:flex;align-items:center;gap:8px;justify-content:flex-end">
+              <span class="src src-side"><span class="sdot"></span>Sideload</span>
+            </div>
+          </div>
+
+          <div class="tbl-row">
+            <div class="cbx"><svg width="10" height="10" viewBox="0 0 10 10"><path d="M1 5l2.5 2.5L9 2" stroke="#fff" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+            <div class="app-ico" style="background:linear-gradient(135deg,#fd79a8,#e84393)">📷</div>
+            <div>
+              <div class="app-name">Photo Cleaner Boost</div>
+              <div class="app-pkg">com.photo.cleaner.boost</div>
+            </div>
+            <div style="font-size:12.5px;color:var(--text-2)">Junk</div>
+            <div><span class="pill p-low"><span class="dot"></span>ต่ำ</span></div>
+            <div style="display:flex;align-items:center;gap:8px;justify-content:flex-end">
+              <span class="src src-unknown"><span class="sdot"></span>ไม่ทราบ</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- selection bar -->
+        <div class="selbar">
+          <div class="cnt">เลือกแล้ว <b>2</b> แอป</div>
+          <div class="sp"></div>
+          <button class="btn btn-sec btn-sm">✦ ล้างข้อมูล</button>
+          <button class="btn btn-danger btn-sm">⌫ ถอนการติดตั้ง</button>
+        </div>
+
+        <!-- live monitor -->
+        <div class="live">
+          <div class="live-head">
+            <div class="live-dot"></div>
+            <div class="live-title">ตรวจจับแอปที่กำลังทำงาน</div>
+            <div class="live-upd">อัปเดต 2 วินาทีที่แล้ว</div>
+          </div>
+          <div class="live-grid">
+            <div class="lg">
+              <div class="lg-lbl">◉ แอปหน้าจอหลัก</div>
+              <div class="lg-val">com.android.settings</div>
+            </div>
+            <div class="lg">
+              <div class="lg-lbl">⚠ กำลังวาดทับหน้าจอ</div>
+              <div class="lg-val alert">com.fake.cleaner</div>
+            </div>
+            <div class="lg">
+              <div class="lg-lbl">◈ บังคับหยุดได้</div>
+              <div class="lg-val none">— ไม่มี —</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- app info -->
+        <div class="info-panel">
+          <div class="ip-head">
+            <div class="app-ico" style="background:linear-gradient(135deg,#ff6b6b,#ff4757)">🧹</div>
+            <div>
+              <div class="app-name">Virus Cleaner Pro</div>
+              <div class="app-pkg">com.fake.cleaner</div>
+            </div>
+            <div style="margin-left:auto"><span class="pill p-critical"><span class="dot"></span>สูงมาก</span></div>
+          </div>
+          <div class="ip-body">
+            <div>
+              <div class="ipi-lbl">ขนาดแอป</div>
+              <div class="ipi-val">4.2 MB</div>
+            </div>
+            <div>
+              <div class="ipi-lbl">ติดตั้งเมื่อ</div>
+              <div class="ipi-val">12 ก.ค. 2569</div>
+            </div>
+            <div>
+              <div class="ipi-lbl">แหล่งที่มา</div>
+              <div class="ipi-val" style="color:var(--danger)">Sideload APK</div>
+            </div>
+            <div>
+              <div class="ipi-lbl">ผู้ติดตั้ง</div>
+              <div class="ipi-val mono">null</div>
+            </div>
+            <div style="grid-column:1/-1">
+              <div class="ipi-lbl">สิทธิ์ที่ขอ · <span style="color:var(--danger);font-weight:600">12 รายการ</span></div>
+              <div class="perm-list">
+                <span class="perm">SYSTEM_ALERT_WINDOW</span>
+                <span class="perm">RECEIVE_BOOT_COMPLETED</span>
+                <span class="perm">READ_CONTACTS</span>
+                <span class="perm">READ_SMS</span>
+                <span class="perm">CAMERA</span>
+                <span class="perm">ACCESS_FINE_LOCATION</span>
+                <span class="perm">REQUEST_INSTALL_PACKAGES</span>
+                <span class="perm warn">DEVICE_ADMIN</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- log -->
+        <div class="log">
+          <div class="log-head">
+            <div class="log-title">บันทึกการทำงาน</div>
+            <div style="margin-left:auto"><button class="btn btn-sec btn-sm">คัดลอก</button></div>
+          </div>
+          <div class="log-body">
+            <div class="log-line"><span class="log-t">13:24:01</span><span class="log-info">▶</span><span class="log-m">สแกนรายการต้องระวัง…</span></div>
+            <div class="log-line"><span class="log-t">13:24:02</span><span class="log-ok">✓</span><span class="log-m">ดึงฐานข้อมูลจาก GitHub สำเร็จ (15 รายการ)</span></div>
+            <div class="log-line"><span class="log-t">13:24:02</span><span class="log-info">▶</span><span class="log-m">อ่านรายการแอปบนเครื่อง 318 รายการ</span></div>
+            <div class="log-line"><span class="log-t">13:24:03</span><span class="log-warn">⚠</span><span class="log-m">พบแอปต้องระวัง 2 รายการ</span></div>
+            <div class="log-line"><span class="log-t">13:24:03</span><span class="log-err">✕</span><span class="log-m">com.fake.cleaner — Sideload, ตรวจพบ SYSTEM_ALERT_WINDOW</span></div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ component showcase ============ -->
+<div class="section-label">องค์ประกอบ</div>
+
+<div class="grid2">
+  <div class="panel">
+    <h3>ปุ่ม</h3>
+    <div class="pd">ทุกปุ่มมี hover (ยกขึ้น 1px + เงานุ่ม) และ active (ย่อ 97%)</div>
+    <div class="row">
+      <button class="btn btn-primary">◎ สแกนใหม่</button>
+      <button class="btn btn-sec">⚒ เครื่องมือ</button>
+      <button class="btn btn-danger">⌫ ถอนแอป</button>
+      <button class="btn btn-primary" disabled>ปิดใช้งาน</button>
+    </div>
+    <div class="row">
+      <button class="btn btn-primary btn-sm">ขนาดเล็ก</button>
+      <button class="btn btn-sec btn-sm">ขนาดเล็ก</button>
+      <button class="icon-btn">⌫</button>
+      <button class="icon-btn n">✦</button>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h3>ป้ายสถานะ</h3>
+    <div class="pd">ใช้จุดสี + ข้อความ เพื่อให้อ่านเร็วและไม่พึ่งสีอย่างเดียว</div>
+    <div class="row">
+      <span class="pill p-critical"><span class="dot"></span>สูงมาก</span>
+      <span class="pill p-high"><span class="dot"></span>สูง</span>
+    </div>
+    <div class="row">
+      <span class="pill p-medium"><span class="dot"></span>ปานกลาง</span>
+      <span class="pill p-low"><span class="dot"></span>ต่ำ</span>
+    </div>
+    <div class="row">
+      <span class="src src-play"><span class="sdot"></span>Play Store</span>
+      <span class="src src-oem"><span class="sdot"></span>Galaxy Store</span>
+      <span class="src src-side"><span class="sdot"></span>Sideload</span>
+      <span class="src src-unknown"><span class="sdot"></span>ไม่ทราบ</span>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h3>ตัวกรองแบบแบ่งส่วน</h3>
+    <div class="pd">ใช้ segmented control แทน dropdown — เห็นตัวเลือกทั้งหมดพร้อมกัน กดครั้งเดียว</div>
+    <div class="row">
+      <div class="seg">
+        <button class="on">ทั้งหมด</button>
+        <button>อันตราย</button>
+        <button>ต้องระวัง</button>
+      </div>
+    </div>
+    <div class="row">
+      <div class="seg">
+        <button class="on">ทุกแหล่งที่มา</button>
+        <button>Play Store</button>
+        <button>Sideload</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h3>การเคลื่อนไหว</h3>
+    <div class="pd">ใช้น้อยและมีจังหวะ ทุกอย่าง 150–250ms</div>
+    <div class="pd" style="margin-bottom:0">
+      • ปุ่ม hover — <code style="background:var(--surface);padding:1.5px 6px;border-radius:5px;font-size:11.5px">180ms</code><br>
+      • ยกปุ่มขึ้น 1px เมื่อ hover<br>
+      • กดแล้วย่อ 97% (ให้ความรู้สึกกดจริง)<br>
+      • จุด Live เต้นช้า ๆ 2 วินาที<br>
+      • ช่องค้นหา — วงแหวนเรืองแสงเมื่อ focus
+    </div>
+  </div>
+</div>
+
+<!-- ============ tokens ============ -->
+<div class="section-label">โทเคนสี</div>
+
+<div class="panel">
+  <div class="tok-grid">
+    <div class="tok"><div class="sw" style="background:#F5F5F7"></div><div class="nm">Background</div><div class="hx">#F5F5F7</div></div>
+    <div class="tok"><div class="sw" style="background:#FFFFFF"></div><div class="nm">Surface</div><div class="hx">#FFFFFF</div></div>
+    <div class="tok"><div class="sw" style="background:#0071E3"></div><div class="nm">Accent</div><div class="hx">#0071E3</div></div>
+    <div class="tok"><div class="sw" style="background:#34C759"></div><div class="nm">Success</div><div class="hx">#34C759</div></div>
+    <div class="tok"><div class="sw" style="background:#FF9F0A"></div><div class="nm">Warning</div><div class="hx">#FF9F0A</div></div>
+    <div class="tok"><div class="sw" style="background:#FF3B30"></div><div class="nm">Danger</div><div class="hx">#FF3B30</div></div>
+    <div class="tok"><div class="sw" style="background:#1D1D1F"></div><div class="nm">Text</div><div class="hx">#1D1D1F</div></div>
+    <div class="tok"><div class="sw" style="background:#6E6E73"></div><div class="nm">Text 2</div><div class="hx">#6E6E73</div></div>
+  </div>
+</div>
+
+<div class="note" style="margin-top:24px">
+  <h4>◐ หมายเหตุเรื่อง Dark Mode</h4>
+  <p>กดปุ่ม <code>สลับ Light / Dark</code> ด้านบนขวาเพื่อดูโหมดมืด — ค่าสีทั้งหมดเปลี่ยนอัตโนมัติ ไม่ต้องเขียน QSS แยก ใช้ CSS variable ชุดเดียวเหมือนกับที่จะเขียนเป็น <code>dict</code> ใน <code>ui/styles.py</code></p>
+</div>
+
+</div>
+
+<script>
+function toggleTheme(){
+  const cur = document.documentElement.getAttribute('data-theme');
+  const next = cur === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+}
+</script>
+</body>
+</html>
