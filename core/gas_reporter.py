@@ -188,7 +188,14 @@ class GASClient:
     """
 
     def __init__(self, url: str | None = None, timeout: int = DEFAULT_TIMEOUT) -> None:
-        self.url = (url or get_gas_url() or "").strip()
+        # ``None`` means "use whatever is configured"; an explicit string is
+        # taken literally. An empty string therefore stays empty instead of
+        # silently falling back to the configured backend — the caller asked
+        # for "no endpoint" and must get "no endpoint".
+        if url is None:
+            self.url = get_gas_url().strip()
+        else:
+            self.url = str(url).strip()
         self.timeout = timeout
 
     # -- low-level ---------------------------------------------------------
@@ -377,7 +384,18 @@ class GASReporterWorker:
         os_version: str = "",
         reporter: str = "",
     ) -> bool:
-        """Enqueue one batch. Returns ``False`` if a previous batch is in flight."""
+        """Enqueue one batch. Returns ``False`` if a previous batch is in flight.
+
+        The payload crosses the thread boundary as a **JSON string**, not as a
+        Python list. PySide6 has no ``QMetaType`` for ``list``, so
+        ``Q_ARG(list, items)`` raises
+
+            RuntimeError: qArgDataFromPyType: Unable to find a QMetaType for "list".
+
+        on every call — the slot never ran and the uninstall report was never
+        sent, even with a perfectly configured backend. A JSON string maps to
+        the built-in ``QString`` meta type, so it travels safely.
+        """
         from PySide6.QtCore import QMetaObject, Qt, Q_ARG
 
         with self._lock:
@@ -386,15 +404,20 @@ class GASReporterWorker:
             self._busy = True
 
         items = list(packages)
-        # ``Q_ARG`` keeps the payload typed across the thread boundary.
+        payload = json.dumps(
+            {
+                "packages": items,
+                "deviceModel": str(device_model or ""),
+                "osVersion": str(os_version or ""),
+                "reporter": str(reporter or ""),
+            },
+            ensure_ascii=False,
+        )
         QMetaObject.invokeMethod(
             self._task,
             "run",
             Qt.ConnectionType.QueuedConnection,
-            Q_ARG(list, items),
-            Q_ARG(str, str(device_model or "")),
-            Q_ARG(str, str(os_version or "")),
-            Q_ARG(str, str(reporter or "")),
+            Q_ARG(str, payload),
         )
         return True
 
@@ -430,23 +453,34 @@ class _ReporterTask(QObject):
         super().__init__()
         self._client = GASClient(url=url)
 
-    def run(
-        self,
-        packages: list,
-        device_model: str,
-        os_version: str,
-        reporter: str,
-    ) -> None:
+    @Slot(str)
+    def run(self, payload: str) -> None:
         """Execute one batch.
 
-        Implemented as a ``Slot`` (decorated via ``@Slot`` below) so it can be
-        invoked from the GUI thread via :func:`QMetaObject.invokeMethod`.
+        ``payload`` is a JSON string (see :meth:`GASReporterWorker.submit` for
+        why it is not a Python object).
+
+        The ``@Slot(str)`` decorator has to sit **inside the class body** —
+        PySide6 builds the meta-object when the class is created, so a later
+        ``_ReporterTask.run = Slot(str)(...)`` assignment is ignored and
+        ``invokeMethod`` reports "No such method _ReporterTask::run(QString)".
         """
         try:
+            try:
+                request = json.loads(payload)
+            except (TypeError, ValueError) as exc:
+                self.failed.emit(f"GAS: payload เสียรูปแบบ ({exc})")
+                self.reported.emit([])
+                return
+
+            packages = request.get("packages") or []
+            device_model = str(request.get("deviceModel") or "")
+            os_version = str(request.get("osVersion") or "")
+            reporter = str(request.get("reporter") or "")
+
             if not packages:
                 self.log_line.emit("INFO", "GAS: ไม่มีรายการให้ส่ง")
                 self.reported.emit([])
-                self.finished.emit()
                 return
 
             self.log_line.emit(
@@ -466,30 +500,31 @@ class _ReporterTask(QObject):
                 return
 
             details = []
+            logged = 0
+            queued = 0
             if isinstance(response.payload, dict):
                 raw_details = response.payload.get("details")
                 if isinstance(raw_details, list):
                     for item in raw_details:
                         if isinstance(item, dict):
+                            outcome = str(item.get("outcome") or "")
+                            if outcome == "logged":
+                                logged += 1
+                            elif outcome == "queued":
+                                queued += 1
                             details.append(
-                                (str(item.get("package") or ""), str(item.get("outcome") or ""))
+                                (str(item.get("package") or ""), outcome)
                             )
             self.reported.emit(details)
             self.log_line.emit(
                 "OK",
-                f"GAS: บันทึก {response.payload.get('logged', 0) if isinstance(response.payload, dict) else 0} "
-                f"เข้าสถิติ / {response.payload.get('queued', 0) if isinstance(response.payload, dict) else 0} "
-                f"รออนุมัติ",
+                f"GAS: ส่งเรียบร้อย — บันทึกสถิติ {logged} · รออนุมัติ {queued}",
             )
         except Exception as exc:  # noqa: BLE001 - last-resort safety net
             self.failed.emit(f"GAS worker ล้มเหลว: {exc}")
             self.reported.emit([])
         finally:
             self.finished.emit()
-
-
-# Mark the run() method as a Qt slot so ``invokeMethod`` can dispatch to it.
-_ReporterTask.run = Slot(list, str, str, str)(_ReporterTask.run)
 
 
 __all__ = [

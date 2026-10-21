@@ -19,6 +19,9 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -356,6 +359,109 @@ def test_package_listing() -> None:
     check("path ว่างไม่ชนะ", not _better_apk_path("", "/a/base.apk"))
 
 
+def test_gas_reporter_flow() -> None:
+    print("\n== ส่งรายงานไป GAS ==")
+    from PySide6.QtWidgets import QApplication
+
+    from core.gas_reporter import GASReporterWorker, load_gas_config, save_gas_config
+
+    app = QApplication.instance() or QApplication([])
+    received: list[tuple[str, bytes]] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802 - http.server naming
+            length = int(self.headers.get("Content-Length", 0))
+            received.append((self.path, self.rfile.read(length)))
+            body = json.dumps(
+                {
+                    "ok": True,
+                    "logged": 1,
+                    "queued": 0,
+                    "details": [{"package": "com.probe.app", "outcome": "logged"}],
+                }
+            ).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args) -> None:  # noqa: ANN002 - silence the server
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    original = load_gas_config()
+    worker = None
+    try:
+        cfg = load_gas_config()
+        cfg.url = f"http://127.0.0.1:{port}/exec"
+        save_gas_config(cfg)
+
+        worker = GASReporterWorker(url=cfg.url)
+        reported: list = []
+        failed: list = []
+        worker.reported.connect(reported.append)
+        worker.failed.connect(failed.append)
+
+        accepted = worker.submit(
+            [
+                {
+                    "package": "com.probe.app",
+                    "appName": "Probe",
+                    "category": "Adware",
+                    "riskLevel": "สูง",
+                    "source": "Sideload",
+                }
+            ],
+            device_model="Samsung SM-A546E",
+            os_version="Android 14",
+            reporter="probe-branch",
+        )
+        check("รับงานได้", accepted)
+
+        deadline = time.monotonic() + 8
+        while not received and time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(0.05)
+
+        check("POST ออกไปถึงเซิร์ฟเวอร์", len(received) == 1, f"{len(received)} ครั้ง")
+        if received:
+            path, raw = received[0]
+            data = json.loads(raw.decode("utf-8"))
+            check("ส่ง package ถูกต้วย", data["packages"][0]["package"] == "com.probe.app", str(data))
+            check("ส่งชื่อแอป", data["packages"][0]["appName"] == "Probe", str(data))
+            check("ส่งชื่อเครื่อง", data["deviceModel"] == "Samsung SM-A546E", str(data))
+            check("ส่งเวอร์ชัน Android", data["osVersion"] == "Android 14", str(data))
+            check("ส่งชื่อสาขา", data["reporter"] == "probe-branch", str(data))
+        check("ไม่มี error", not failed, str(failed))
+        check("ได้ผลลัพธ์กลับมา", len(reported) == 1, str(reported))
+    finally:
+        save_gas_config(original)
+        if worker is not None:
+            worker.shutdown()
+        server.shutdown()
+        server.server_close()
+
+
+def test_gas_client_offline() -> None:
+    print("\n== GAS ตอบกลับไม่ได้ ==")
+    from core.gas_reporter import GASClient
+
+    client = GASClient(url="http://127.0.0.1:1/", timeout=3)
+    response = client.ping()
+    check("ไม่ crash", response.ok is False, str(response.ok))
+    check("มีข้อความอธิบาย", bool(response.message), response.message)
+
+    # An empty URL must not silently fall back to a configured backend — the
+    # caller has to be told that nothing is set up yet.
+    empty = GASClient(url="")
+    check("ไม่มี URL → บอกผู้ใช้", empty.ping().ok is False)
+    check("ไม่มี URL → มีข้อความ", "GAS" in empty.ping().message, empty.ping().message)
+
+
 def test_gas_row_translation() -> None:
     print("\n== แปลงข้อมูลจาก GAS ==")
     from core.adb_extended import _rows_from_gas
@@ -602,6 +708,8 @@ def main() -> int:
         test_shell_quoting,
         test_package_listing,
         test_gas_row_translation,
+        test_gas_reporter_flow,
+        test_gas_client_offline,
         test_apk_meta_tolerates_garbage,
         test_updater_helpers,
         test_styles,

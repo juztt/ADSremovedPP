@@ -156,6 +156,7 @@ class DatabasePage(QWidget):
     save_local_requested = Signal(list)          # list[dict]
     push_remote_requested = Signal(list)         # list[dict]
     gas_config_changed = Signal(str, str, str)  # url, reporter, admin_token
+    gas_test_report_requested = Signal(str)      # url
     status_message = Signal(str, str)            # level, message
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -312,6 +313,18 @@ class DatabasePage(QWidget):
         hint.setWordWrap(True)
         outer.addWidget(hint)
 
+        self.btn_gas_report_test = make_button(
+            "ส่งรายงานทดสอบ 1 รายการ",
+            kind="ghost",
+            small=True,
+            tooltip=(
+                "ส่งแอปปลอมหนึ่งรายการขึ้น backend เพื่อยืนยันว่าข้อมูลเดินทางถึง sheet จริง\n"
+                "(รายการนี้จะโผล่ใน Pending Reports ของ Admin WebApp)"
+            ),
+            on_click=self._on_gas_report_test,
+        )
+        outer.addWidget(self.btn_gas_report_test)
+
         column.addWidget(card)
 
         # hydrate inputs from disk
@@ -335,6 +348,20 @@ class DatabasePage(QWidget):
             self.gas_status_label.setText(f"✓ เชื่อมต่อได้ — {response.message}")
         else:
             self.gas_status_label.setText(f"✗ {response.message[:80]}")
+
+    def _on_gas_report_test(self) -> None:
+        """Send one synthetic entry so the technician can confirm the pipe works.
+
+        A ping only proves the URL resolves. This proves a *report* reaches
+        the sheet — the thing that actually has to work when the shop floor
+        deletes an app.
+        """
+        url = self.gas_url_input.text().strip()
+        if not url:
+            self.gas_status_label.setText("⚠ กรุณากรอก URL ก่อน")
+            return
+        self.gas_test_report_requested.emit(url)
+        self.gas_status_label.setText("กำลังส่งรายงานทดสอบ...")
 
     def _on_gas_save(self) -> None:
         """Persist all three fields, then ask the main window to rebuild the worker."""

@@ -28,7 +28,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QThread, QTimer
+from PySide6.QtCore import Qt, QThread, QTimer
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
@@ -110,8 +110,9 @@ class AppState:
         self.entries: list[AppEntry] = []
         self.live_snapshot: LiveSnapshot | None = None
         self.flags = FlagStore()
-        # GAS payload context (set by scan results)
+        # GAS payload context (set by the device probe)
         self.android_release: str = ""
+        self.device_title: str = ""
 
 
 class MainWindow(QMainWindow):
@@ -135,6 +136,8 @@ class MainWindow(QMainWindow):
 
         self._spawned_threads: list[QThread] = []
         self._background_workers: list[ExtendedAdbWorker] = []
+        # Short-lived workers used by the "send a test report" button.
+        self._test_report_workers: list[object] = []
         self._busy = False
         self._closing = False
 
@@ -232,6 +235,21 @@ class MainWindow(QMainWindow):
         self.connection_label.setContentsMargins(6, 0, 6, 0)
         column.addWidget(self.connection_label)
 
+        # GAS status. The report only leaves the machine when a WebApp URL is
+        # configured, and a silent skip is indistinguishable from "the backend
+        # is broken" — so the state is always visible in the sidebar.
+        self.gas_label = QLabel("GAS: ยังไม่ได้ตั้งค่า")
+        self.gas_label.setObjectName("Faint")
+        self.gas_label.setContentsMargins(6, 0, 6, 0)
+        self.gas_label.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.gas_label.setToolTip(
+            "คลิกเพื่อไปหน้าฐานข้อมูลและตั้งค่า GAS WebApp URL\n"
+            "(ถ้ายังไม่ตั้งค่า รายการที่ถอนแอปจะไม่ถูกรายงานขึ้น backend)"
+        )
+        self.gas_label.mouseReleaseEvent = self._on_gas_label_clicked  # type: ignore[method-assign]
+        column.addWidget(self.gas_label)
+        self._refresh_gas_status()
+
         footer = HBox(spacing=4, margins=(4, 2, 2, 2))
         self.btn_theme = make_button(
             "",
@@ -293,6 +311,7 @@ class MainWindow(QMainWindow):
         database.save_local_requested.connect(self._on_database_saved)
         database.push_remote_requested.connect(self._on_database_push)
         database.gas_config_changed.connect(self._on_gas_config_changed)
+        database.gas_test_report_requested.connect(self._on_gas_test_report)
         database.set_path(config.LOCAL_DB_PORTABLE)
         database.refresh_gas_status()
 
@@ -496,6 +515,10 @@ class MainWindow(QMainWindow):
 
     def _on_device_info(self, info: dict) -> None:
         self.scan_page.set_device_info(info)
+        # Keep the context the GAS report needs — the table widget is not a
+        # reliable place to read it back from.
+        self.state.android_release = str(info.get("android_release", "") or "")
+        self.state.device_title = str(info.get("title", "") or "")
 
     # ------------------------------------------------------------------
     # Scanning
@@ -767,10 +790,14 @@ class MainWindow(QMainWindow):
         self._set_busy(False)
         succeeded = [r for r in results if getattr(r, "success", False)]
         if succeeded:
+            # Ship **before** the rows disappear. ``remove_packages`` drops the
+            # entries from the table, and the report needs their category, risk
+            # level and installer source — afterwards every row would go up to
+            # the backend as a bare package name.
+            self._ship_uninstall_report(results)
             self.scan_page.remove_packages([r.package for r in succeeded])
             if self._closing:
                 return
-            self._ship_uninstall_report(results)
         failed = [r for r in results if not getattr(r, "success", False)]
         if failed and not self._closing:
             names = ", ".join(r.package for r in failed[:5])
@@ -786,7 +813,15 @@ class MainWindow(QMainWindow):
         from core.gas_reporter import get_gas_url, get_reporter
 
         if not get_gas_url():
-            # No backend configured → skip silently; UI surfaces this separately.
+            # No backend configured. Say so out loud — skipping silently is
+            # what made "I deleted an app and nothing showed up in the sheet"
+            # impossible to diagnose.
+            if not self._closing:
+                self.log_panel.append(
+                    "WARN",
+                    "GAS: ยังไม่ได้ตั้งค่า URL — รายการที่ถอนแล้วไม่ได้ถูกรายงานขึ้น backend "
+                    "(ตั้งค่าได้ในหน้าฐานข้อมูล)",
+                )
             return
 
         succeeded = [
@@ -796,13 +831,7 @@ class MainWindow(QMainWindow):
         if not succeeded:
             return
 
-        device_model = ""
-        if self.scan_page._entries:
-            head = self.scan_page._entries[0]
-            device_model = (
-                f"{getattr(head, 'manufacturer', '') or ''} "
-                f"{getattr(head, 'model', '') or ''}".strip()
-            ) or ""
+        device_model = (self.state.device_title or "").strip()
         os_version = ""
         if self.state.android_release and self.state.android_release != "—":
             os_version = f"Android {self.state.android_release}"
@@ -813,10 +842,13 @@ class MainWindow(QMainWindow):
         known_entries = {entry.package: entry for entry in self.scan_page._entries}
         for result in succeeded:
             entry = known_entries.get(result.package)
+            app_name = getattr(result, "app_name", "") or ""
+            if not app_name and entry is not None:
+                app_name = entry.display_name
             packages.append({
                 "package": result.package,
-                "appName": getattr(result, "app_name", "") or result.package,
-                "category": getattr(entry, "category", "") if entry else "",
+                "appName": app_name or result.package,
+                "category": getattr(entry, "threat_type", "") if entry else "",
                 "riskLevel": _risk_label(getattr(entry, "effective_risk", "") if entry else ""),
                 "source": _source_label(getattr(entry, "source", None) if entry else None),
             })
@@ -849,12 +881,98 @@ class MainWindow(QMainWindow):
             return
         self.log_panel.append("ERROR", f"GAS: {message}")
 
+    def _on_gas_label_clicked(self, event) -> None:  # noqa: N802 - Qt naming
+        """Jump to the Database page where the GAS URL is configured."""
+        self._select_page(PAGE_DATABASE)
+
+    def _refresh_gas_status(self) -> None:
+        """Show whether the uninstall report can actually leave the machine."""
+        from core.gas_reporter import get_gas_url
+
+        label = getattr(self, "gas_label", None)
+        if label is None:
+            return
+        url = get_gas_url()
+        tokens = styles.current()
+        if url:
+            short = url.rstrip("/").split("/")[-1][:12]
+            label.setText(f"●  GAS: พร้อม ({short})")
+            label.setStyleSheet(f"color:{tokens['success']}; font-size:11.5px;")
+            label.setToolTip(f"รายงานจะถูกส่งไปที่\n{url}")
+        else:
+            label.setText("●  GAS: ยังไม่ได้ตั้งค่า")
+            label.setStyleSheet(f"color:{tokens['warning']}; font-size:11.5px;")
+            label.setToolTip(
+                "ยังไม่ได้ตั้งค่า GAS WebApp URL — รายการที่ถอนแอปจะไม่ถูกรายงานขึ้น backend\n"
+                "คลิกเพื่อไปตั้งค่าในหน้าฐานข้อมูล"
+            )
+
+    def _on_gas_test_report(self, url: str) -> None:
+        """Send one synthetic entry so the technician can confirm the pipe.
+
+        A ping only proves the URL resolves; this proves a *report* lands in
+        the sheet — which is what has to work when the shop floor deletes an
+        app. The entry is clearly marked so it can be removed afterwards.
+        """
+        import time
+
+        from core.gas_reporter import GASReporterWorker, get_reporter
+
+        stamp = time.strftime("%H:%M:%S")
+        worker = GASReporterWorker(url=url)
+        worker.reported.connect(
+            lambda details: self._on_gas_test_report_done(url, details)
+        )
+        worker.failed.connect(
+            lambda message: self.database_page.gas_status_label.setText(
+                f"✗ ส่งไม่สำเร็จ — {message[:70]}"
+            )
+        )
+        accepted = worker.submit(
+            [
+                {
+                    "package": "com.adsremovedpp.test",
+                    "appName": f"ทดสอบระบบ {stamp}",
+                    "category": "อื่นๆ",
+                    "riskLevel": "ต่ำ",
+                    "source": "ไม่ทราบ",
+                }
+            ],
+            device_model=self.state.device_title or "ทดสอบ",
+            os_version="Android 14",
+            reporter=get_reporter() or "ทดสอบ",
+        )
+        if not accepted:
+            self.database_page.gas_status_label.setText("✗ มีงานกำลังส่งอยู่ — ลองอีกครั้ง")
+            worker.shutdown()
+            return
+        # The worker owns its thread; keep it alive until the POST completes.
+        self._test_report_workers.append(worker)
+
+    def _on_gas_test_report_done(self, url: str, details: list) -> None:
+        for worker in list(self._test_report_workers):
+            worker.shutdown()
+        self._test_report_workers.clear()
+        if details:
+            package = details[0][0] if details else ""
+            self.database_page.gas_status_label.setText(
+                f"✓ ส่งสำเร็จ — {package} เข้า Pending Reports แล้ว"
+            )
+            self.log_panel.append(
+                "OK",
+                f"GAS: รายงานทดสอบถูกส่งไปที่ {url} — ตรวจในแท็บ Pending ของ Admin WebApp",
+            )
+        else:
+            self.database_page.gas_status_label.setText("✗ backend ไม่ยืนยันรายการ")
+
     def _on_gas_config_changed(self, url: str, reporter: str, _admin_token: str) -> None:
         """Recreate the GAS worker when the URL changes — different URL means a
         different backend deployment; reusing the worker would still hold the
         old endpoint inside the running task object.
         """
         from core.gas_reporter import GASReporterWorker
+
+        self._refresh_gas_status()
 
         if not url:
             self.log_panel.append("INFO", "GAS: ปิดการส่งรายงาน (ยังไม่ได้ตั้งค่า URL)")
@@ -1052,6 +1170,14 @@ class MainWindow(QMainWindow):
             self.gas_reporter.shutdown()
         except Exception:  # noqa: BLE001 - shutdown must always succeed
             pass
+
+        # Same for the short-lived test-report workers.
+        for worker in list(self._test_report_workers):
+            try:
+                worker.shutdown()
+            except Exception:  # noqa: BLE001 - shutdown must always succeed
+                pass
+        self._test_report_workers.clear()
 
         # Only now is it safe to take the adb server down.
         try:
