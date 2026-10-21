@@ -89,6 +89,29 @@ SOURCE_FILTERS: Sequence[tuple[str, str]] = (
 )
 
 
+def _entry_type_label(entry: AppEntry) -> str:
+    """Describe what kind of app this is, for the "ประเภทหน้าต่าง" column.
+
+    A blacklist hit carries its own category (``Adware``, ``PUA`` …). For every
+    other app the column used to show a bare em-dash, which read like a bug;
+    it now says where the app came from, which is what the technician actually
+    wants to know about an app that is *not* flagged.
+    """
+    if entry.threat_type:
+        return entry.threat_type
+    if not entry.is_enabled:
+        return "ปิดใช้งาน"
+    if entry.is_system:
+        return "แอประบบ"
+    if entry.source.kind == "side":
+        return "ติดตั้งเอง (Sideload)"
+    if entry.source.kind == "play":
+        return "จาก Play Store"
+    if entry.source.kind == "store":
+        return f"จาก {entry.source.label}"
+    return "ผู้ใช้ติดตั้ง"
+
+
 class ScanPage(QWidget):
     """Device overview, blacklist table, bulk actions and app detail."""
 
@@ -395,6 +418,26 @@ class ScanPage(QWidget):
         if self._entries:
             self.prime_icons_requested.emit(self._entries[:24])
 
+    def set_app_labels(self, labels: dict) -> None:
+        """Apply app labels resolved from the device.
+
+        ``pm list packages`` only reports package names, so the human-readable
+        label has to be read out of the APK itself. The worker does that while
+        it pulls the APK for the icon, then hands the map over here. Rows whose
+        label is still unknown keep the package name, which is the honest
+        fallback — the second line of the row always shows the package anyway.
+        """
+        if not labels:
+            return
+        changed = False
+        for entry in self._entries:
+            label = labels.get(entry.package)
+            if label and entry.app_name != label:
+                entry.app_name = label
+                changed = True
+        if changed:
+            self._apply_filters()
+
     def get_entries(self) -> list[AppEntry]:
         return list(self._entries)
 
@@ -501,7 +544,7 @@ class ScanPage(QWidget):
             name.setToolTip(f"{entry.display_name}\n{entry.package}\n{entry.describe_risk()}")
             self.table.setItem(row, COL_NAME, name)
 
-            type_item = QTableWidgetItem(entry.threat_type or ("ระบบ" if entry.is_system else "—"))
+            type_item = QTableWidgetItem(_entry_type_label(entry))
             type_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
             type_item.setData(meta_role(), {"colour": styles.current()["text_muted"]})
             self.table.setItem(row, COL_TYPE, type_item)

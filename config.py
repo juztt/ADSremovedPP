@@ -81,7 +81,18 @@ def app_dir() -> Path:
 
 
 def user_data_dir() -> Path:
-    """Per-user writable directory for settings and downloaded updates."""
+    """Per-user writable directory for settings and downloaded updates.
+
+    Set ``ADSREMOVEDPP_DATA_DIR`` to point the whole app at a different folder
+    — useful for a portable install on a USB stick, and for automated tests
+    that need a scratch directory instead of the real profile.
+    """
+    override = os.environ.get("ADSREMOVEDPP_DATA_DIR", "").strip()
+    if override:
+        path = Path(override).expanduser()
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
     if sys.platform == "win32":
         base = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
     elif sys.platform == "darwin":

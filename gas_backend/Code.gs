@@ -118,7 +118,16 @@ function doPost(e) {
     return jsonResponse_({ ok: false, error: 'invalid JSON', detail: String(err) });
   }
 
-  // ตรวจโครงสร้าง payload
+  // ---- admin write actions (from the Python app's Database page) ----------
+  var action = String(payload.action || '').trim();
+  if (action === 'push_approved') {
+    return pushApproved_(payload);
+  }
+  if (action === 'delete_approved') {
+    return deleteApproved_(payload);
+  }
+
+  // ---- uninstall report (from the Python app after a removal) ------------
   var pkgs = Array.isArray(payload.packages) ? payload.packages : [];
   var deviceInfo = String(payload.deviceModel || payload.device || '').trim();
   var osVersion = String(payload.osVersion || '').trim();
@@ -405,6 +414,105 @@ function listApproved(query) {
 // ============================================================================
 // Internal helpers
 // ============================================================================
+
+/**
+ * เขียนรายการที่ช่างแก้ไขในแอป Python ลง Approved_DB ทันที
+ * (ข้ามคิวรออนุมัติ เพราะคนที่แก้คือ admin อยู่แล้ว)
+ */
+function pushApproved_(payload) {
+  var entries = Array.isArray(payload.entries) ? payload.entries : [];
+  if (entries.length === 0) {
+    return jsonResponse_({ ok: false, error: 'no entries supplied' });
+  }
+
+  var sheet = SpreadsheetApp.getActive().getSheetByName('Approved_DB');
+  var data = sheet.getDataRange().getValues();
+  var header = data[0] || [];
+  var pkgIndex = header.indexOf('package');
+
+  // index ของ package ที่มีอยู่แล้ว
+  var existing = {};
+  if (pkgIndex >= 0) {
+    for (var i = 1; i < data.length; i++) {
+      var key = String(data[i][pkgIndex] || '');
+      if (key) existing[key] = i + 1;
+    }
+  }
+
+  var added = 0;
+  var updated = 0;
+  var skipped = 0;
+  var stamp = Utilities.formatDate(new Date(), 'Asia/Bangkok', 'yyyy-MM-dd HH:mm:ss');
+
+  for (var e = 0; e < entries.length; e++) {
+    var row = entries[e] || {};
+    var pkg = String(row.package || '').trim();
+    if (!pkg) {
+      skipped++;
+      continue;
+    }
+
+    var appName = String(row.appName || row.app_name || pkg).trim();
+    var category = normalizeCategory_(row.category || row.type);
+    var riskLevel = normalizeRisk_(row.riskLevel || row.risk);
+    var source = String(row.source || 'ไม่ทราบ').trim() || 'ไม่ทราบ';
+    var note = String(row.note || '').trim();
+
+    if (existing[pkg]) {
+      // อัปเดตแถวเดิม
+      var rowIndex = existing[pkg];
+      if (pkgIndex >= 0) sheet.getRange(rowIndex, pkgIndex + 1).setValue(pkg);
+      setIfColumn_(sheet, header, rowIndex, 'appName', appName);
+      setIfColumn_(sheet, header, rowIndex, 'category', category);
+      setIfColumn_(sheet, header, rowIndex, 'riskLevel', riskLevel);
+      setIfColumn_(sheet, header, rowIndex, 'source', source);
+      setIfColumn_(sheet, header, rowIndex, 'note', note);
+      setIfColumn_(sheet, header, rowIndex, 'addedAt', stamp);
+      updated++;
+    } else {
+      sheet.appendRow([
+        pkg,
+        appName,
+        category,
+        riskLevel,
+        source,
+        note,
+        stamp,
+        'app (local edit)'
+      ]);
+      existing[pkg] = sheet.getLastRow();
+      added++;
+    }
+  }
+
+  return jsonResponse_({
+    ok: true,
+    added: added,
+    updated: updated,
+    skipped: skipped,
+    total: sheet.getLastRow() - 1
+  });
+}
+
+/**
+ * ลบรายการออกจาก Approved_DB (เรียกจากแอป Python)
+ */
+function deleteApproved_(payload) {
+  var pkg = String(payload.package || '').trim();
+  if (!pkg) return jsonResponse_({ ok: false, error: 'empty package' });
+
+  var sheet = SpreadsheetApp.getActive().getSheetByName('Approved_DB');
+  var idx = findRowByPackage_(sheet, pkg);
+  if (idx <= 0) return jsonResponse_({ ok: false, error: 'package not approved' });
+  sheet.deleteRow(idx);
+  return jsonResponse_({ ok: true, package: pkg });
+}
+
+function setIfColumn_(sheet, header, rowIndex, name, value) {
+  var idx = header.indexOf(name);
+  if (idx < 0) return;
+  sheet.getRange(rowIndex, idx + 1).setValue(value);
+}
 
 function ensureSheets_() {
   var ss = SpreadsheetApp.getActive();

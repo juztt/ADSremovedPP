@@ -294,6 +294,25 @@ class GASClient:
         }
         return self._post(body)
 
+    def push_approved(self, rows: Iterable[dict]) -> GASResponse:
+        """Write the technician's edited blacklist straight into ``Approved_DB``.
+
+        This is the "save my own entries" path used by the Database page. It
+        bypasses the pending queue on purpose: the person editing the table
+        *is* the admin, so their rows go live immediately.
+        """
+        body = {
+            "action": "push_approved",
+            "entries": list(rows),
+            "submittedAt": _now_iso(),
+        }
+        return self._post(body)
+
+    def delete_approved(self, package: str) -> GASResponse:
+        """Remove one package from ``Approved_DB``."""
+        body = {"action": "delete_approved", "package": str(package or "").strip()}
+        return self._post(body)
+
     # -- compatibility ----------------------------------------------------
 
     def fetch_blacklist(self) -> GASResponse:

@@ -302,6 +302,105 @@ def test_shell_quoting() -> None:
     check("path มี quote", "'\\''" in _shell_quote("/data/a'b.apk"), _shell_quote("/data/a'b.apk"))
 
 
+def test_package_listing() -> None:
+    print("\n== การอ่านรายชื่อแอปจากเครื่อง ==")
+    from core.adb_extended import ExtendedAdbManager, _better_apk_path
+
+    # A realistic `pm list packages -f -i` dump: one app split into three
+    # files, one Play app, one sideloaded app and one system app.
+    dump = "\n".join(
+        [
+            "package:/data/app/com.split.app-abc==/base.apk=com.split.app installer=com.android.vending",
+            "package:/data/app/com.split.app-abc==/split_config.arm64_v8a.apk=com.split.app installer=com.android.vending",
+            "package:/data/app/com.split.app-abc==/split_config.xxhdpi.apk=com.split.app installer=com.android.vending",
+            "package:/data/app/com.play.app/base.apk=com.play.app installer=com.android.vending",
+            "package:/data/app/com.side.app/base.apk=com.side.app installer=null",
+            "package:/system/app/Settings/Settings.apk=com.android.settings",
+        ]
+    )
+
+    manager = ExtendedAdbManager()
+    manager._run = lambda *args, **kwargs: dump  # type: ignore[method-assign]
+    entries = manager.list_packages_detailed("serial")
+
+    packages = [entry.package for entry in entries]
+    check("ไม่มีแถวซ้ำ", len(packages) == len(set(packages)), str(packages))
+    check("รวม split APK เป็นแอปเดียว", packages.count("com.split.app") == 1, str(packages))
+    check("ได้ครบทุกแอป", len(entries) == 4, str(packages))
+
+    by_package = {entry.package: entry for entry in entries}
+    check(
+        "แยก installer ออกจาก package",
+        by_package["com.play.app"].installer == "com.android.vending",
+        by_package["com.play.app"].installer,
+    )
+    check(
+        "installer=null → Sideload",
+        by_package["com.side.app"].source.kind == "side",
+        by_package["com.side.app"].source.kind,
+    )
+    check(
+        "แอปใน /system เป็นระบบ",
+        by_package["com.android.settings"].is_system
+        and by_package["com.android.settings"].source.kind == "system",
+        by_package["com.android.settings"].source.kind,
+    )
+    check(
+        "เลือก base.apk ไม่ใช่ split",
+        by_package["com.split.app"].apk_path.endswith("/base.apk"),
+        by_package["com.split.app"].apk_path,
+    )
+
+    check("base.apk ชนะ split", _better_apk_path("/a/base.apk", "/a/split_x.apk"))
+    check("base.apk ไม่แย่งกับ base.apk", not _better_apk_path("/a/base.apk", "/b/base.apk"))
+    check("path ว่างไม่ชนะ", not _better_apk_path("", "/a/base.apk"))
+
+
+def test_gas_row_translation() -> None:
+    print("\n== แปลงข้อมูลจาก GAS ==")
+    from core.adb_extended import _rows_from_gas
+
+    rows = _rows_from_gas(
+        [
+            {
+                "package": "com.a.b",
+                "appName": "A B",
+                "category": "Adware",
+                "riskLevel": "สูงมาก",
+            },
+            {
+                "package": "com.c.d",
+                "appName": "C D",
+                "category": "Junk",
+                "riskLevel": "ปานกลาง",
+            },
+            {"package": "com.a.b", "appName": "dup", "riskLevel": "ต่ำ"},
+            {"package": "", "appName": "no package"},
+        ]
+    )
+    check("กรองแถวซ้ำและแถวไม่มี package", len(rows) == 2, str(rows))
+    check("แปลง risk ไทย → อังกฤษ", rows[0]["risk"] == "Critical", str(rows[0]))
+    check("แปลง risk กลาง", rows[1]["risk"] == "Medium", str(rows[1]))
+    check("เอา category มาเป็น type", rows[0]["type"] == "Adware", str(rows[0]))
+
+
+def test_apk_meta_tolerates_garbage() -> None:
+    print("\n== ตัวอ่าน APK ==")
+    from core.apk_meta import extract_icon_bytes, read_app_label
+
+    check("ไฟล์ที่ไม่มีอยู่ → ไม่พัง", read_app_label("definitely-missing.apk") == "")
+    check("ไฟล์ที่ไม่มีอยู่ → ไม่พัง", extract_icon_bytes("definitely-missing.apk") is None)
+
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmp:
+        junk = Path(tmp) / "junk.apk"
+        junk.write_bytes(b"not a zip file at all")
+        check("ไฟล์เสีย → ไม่พัง", read_app_label(junk) == "")
+        check("ไฟล์เสีย → ไม่พัง", extract_icon_bytes(junk) is None)
+
+
 # ---------------------------------------------------------------------------
 # core.updater
 # ---------------------------------------------------------------------------
@@ -501,6 +600,9 @@ def main() -> int:
         test_threat_evaluation,
         test_parsing_helpers,
         test_shell_quoting,
+        test_package_listing,
+        test_gas_row_translation,
+        test_apk_meta_tolerates_garbage,
         test_updater_helpers,
         test_styles,
         test_icon_fallback,

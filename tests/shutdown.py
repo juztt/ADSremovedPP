@@ -91,8 +91,11 @@ def main() -> int:
     print("  [OK]   ปิดหน้าต่างสะอาด")
 
     if thread.isRunning():
+        # The worker may be in the middle of a network call (the database
+        # sync reaches out to the GAS backend), so give it room to unwind
+        # before declaring the teardown broken.
         thread.quit()
-        thread.wait(3000)
+        thread.wait(8000)
     if not thread.isRunning():
         print("  [OK]   worker thread หยุดแล้ว")
     else:

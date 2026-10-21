@@ -428,8 +428,8 @@ class DatabasePage(QWidget):
             on_click=self._save_local,
         )
         self.btn_push = make_button(
-            "↑ ส่งขึ้น GitHub",
-            tooltip="commit รายการเข้า repo เพื่อให้ทุกเครื่องได้รับข้อมูลใหม่",
+            "↑ ส่งขึ้น GAS",
+            tooltip="เขียนรายการลง Approved_DB ของ Google Apps Script ให้ทุกเครื่องได้รับข้อมูลใหม่",
             on_click=self._push_remote,
         )
         row.addWidget(self.btn_save)
@@ -457,7 +457,7 @@ class DatabasePage(QWidget):
         self._apply_filter()
         self._dirty = False
         self._sync_buttons()
-        origin_label = {"remote": "GitHub", "local": "เครื่อง"}.get(origin, origin)
+        origin_label = {"remote": "GAS (Approved_DB)", "local": "เครื่อง"}.get(origin, origin)
         self.page_header.set_caption(
             f"{len(self._rows)} รายการ · ต้นทาง: {origin_label} · แก้ไขในเครื่องจะไม่กระทบของผู้อื่น"
         )
@@ -645,13 +645,25 @@ class DatabasePage(QWidget):
 
     def _push_remote(self) -> None:
         payload = self._serialise()
+        from core.gas_reporter import get_gas_url
+
+        url = get_gas_url()
+        if not url:
+            QMessageBox.warning(
+                self,
+                "ยังไม่ได้ตั้งค่า GAS",
+                "ยังไม่ได้ตั้งค่า GAS WebApp URL\n\n"
+                "กรอก URL ในการ์ด «Cloud Sync · Google Apps Script» ด้านบนก่อน\n"
+                "แล้วกด «ทดสอบการเชื่อมต่อ» เพื่อยืนยันว่า URL ใช้ได้",
+            )
+            return
+
         answer = QMessageBox.question(
             self,
-            "ส่งขึ้น GitHub",
-            f"จะส่งรายการ {len(payload)} รายการขึ้น repository\n"
-            f"{config.GITHUB_OWNER}/{config.GITHUB_REPO}\n\n"
-            "ทุกเครื่องที่ใช้ ADSremovedPP จะได้รับข้อมูลชุดนี้ในการซิงก์ครั้งถัดไป\n\n"
-            "ต้องตั้งค่า Personal Access Token (สิทธิ์ repo) ก่อน\n\n"
+            "ส่งขึ้น GAS",
+            f"จะส่งรายการ {len(payload)} รายการขึ้น Approved_DB\n"
+            f"{url}\n\n"
+            "ทุกเครื่องที่ตั้งค่า GAS เดียวกันจะได้รับข้อมูลชุดนี้ในการซิงก์ครั้งถัดไป\n\n"
             "ดำเนินการต่อหรือไม่?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.Yes,

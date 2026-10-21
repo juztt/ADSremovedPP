@@ -20,6 +20,15 @@ tests/_updater_probe.bat
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+# Scratch data dir used by the device probes (see ADSREMOVEDPP_DATA_DIR)
+.testdata/
+# APKs pulled by the probes
+*.apk
+# Throwaway renders from the design probes
+design/badge_*.png
+design/kit_test.png
+design/t_*.png
+design/shot_dark_v2*.png
 
 # Downloaded updates / runtime data
 update/

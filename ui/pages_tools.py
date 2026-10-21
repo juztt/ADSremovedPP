@@ -238,7 +238,7 @@ class ToolsPage(QWidget):
         self.btn_reload_db = make_button(
             "↻ โหลดใหม่",
             small=True,
-            tooltip="ดึงรายการต้องระวังจาก GitHub อีกครั้ง",
+            tooltip="ดึงรายการต้องระวังจาก GAS อีกครั้ง (ถ้าไม่ได้ตั้งค่า GAS จะใช้ไฟล์ในเครื่อง)",
             on_click=self.reload_database_requested.emit,
         )
         self.btn_edit_db = make_button(
@@ -276,7 +276,7 @@ class ToolsPage(QWidget):
 
     def set_database_status(self, count: int, origin: str) -> None:
         origin_label = {
-            "remote": "จาก GitHub",
+            "remote": "จาก GAS (Approved_DB)",
             "local": "จากไฟล์ในเครื่อง (ออฟไลน์)",
             "empty": "ไม่มีข้อมูล",
         }.get(origin, origin)

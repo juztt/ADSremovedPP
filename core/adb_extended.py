@@ -32,6 +32,7 @@ from PySide6.QtCore import QObject, Signal, Slot
 import config
 from .adb_manager import AdbError, AdbManager, AdbWorker, DeviceRecord, UninstallOutcome
 from .app_model import AppEntry, LiveSnapshot, classify_installer
+from .icon_store import IconStore
 
 # ---------------------------------------------------------------------------
 # Parsing regexes
@@ -70,6 +71,77 @@ _IMPLIED_PERMISSIONS = frozenset(
 )
 
 
+def _better_apk_path(candidate: str, current: str) -> bool:
+    """Decide whether ``candidate`` should replace ``current`` for one package.
+
+    A package installed as ``base.apk`` plus configuration splits is listed by
+    ``pm`` once per file. The base APK is the one that carries the manifest and
+    the launcher icon, so it always wins. Between two splits, the first one
+    seen is kept — the icon and the label are identical across splits.
+    """
+    if not current:
+        return True
+    if not candidate:
+        return False
+
+    candidate_is_base = candidate.endswith("/base.apk")
+    current_is_base = current.endswith("/base.apk")
+    if candidate_is_base != current_is_base:
+        return candidate_is_base
+
+    # Prefer the shortest path — it is the least likely to be a split.
+    return len(candidate) < len(current)
+
+
+#: Map the Thai risk labels the GAS backend stores onto the English keys the
+#: rest of the app uses (``DbEntry.RISK_LEVELS``).
+_GAS_RISK_MAP = {
+    "สูงมาก": "Critical",
+    "สูง": "High",
+    "ปานกลาง": "Medium",
+    "ต่ำ": "Low",
+    "critical": "Critical",
+    "high": "High",
+    "medium": "Medium",
+    "low": "Low",
+}
+
+
+def _rows_from_gas(entries: Sequence[dict]) -> list[dict]:
+    """Normalise the GAS ``get_approved`` payload into blacklist rows.
+
+    The backend speaks Thai risk labels and uses ``category``/``riskLevel``;
+    the app speaks English risk levels and uses ``type``/``risk``. This is the
+    single place that translation happens.
+    """
+    rows: list[dict] = []
+    seen: set[str] = set()
+
+    for raw in entries or ():
+        if not isinstance(raw, dict):
+            continue
+        package = str(raw.get("package", "") or "").strip()
+        if not package or package in seen:
+            continue
+        seen.add(package)
+
+        risk_raw = str(raw.get("risk") or raw.get("riskLevel") or "").strip()
+        risk = _GAS_RISK_MAP.get(risk_raw, risk_raw.title() or "Medium")
+        if risk not in {"Critical", "High", "Medium", "Low"}:
+            risk = "Medium"
+
+        rows.append(
+            {
+                "package": package,
+                "appName": str(raw.get("appName") or raw.get("app_name") or package).strip(),
+                "type": str(raw.get("category") or raw.get("type") or "").strip(),
+                "risk": risk,
+                "note": str(raw.get("note") or "").strip(),
+            }
+        )
+    return rows
+
+
 # ---------------------------------------------------------------------------
 # Time helper
 # ---------------------------------------------------------------------------
@@ -105,30 +177,57 @@ class ExtendedAdbManager(AdbManager):
 
         Used by the icon pipeline to fetch an APK. Raises :class:`AdbError` on
         failure so the caller can fall back to a placeholder tile.
+
+        Two destination forms are tried, because ``adb pull`` is picky:
+
+        1. **Relative name with a working directory** — the portable form. Some
+           adb builds parse the destination as a POSIX path and cannot make
+           sense of a Windows drive letter, rejecting an absolute target with
+           ``cannot create file/directory 'C:/…': No such file or directory``
+           even when the folder exists.
+        2. **Absolute path** — the fallback, for builds that dislike a relative
+           destination.
+
+        The first form that actually produced the file wins.
         """
         import pathlib
 
         destination = pathlib.Path(local_path)
         destination.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            with self._lock:
-                proc = subprocess.run(
-                    [str(self.ensure_available()), "-s", serial, "pull", remote_path, str(destination)],
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    timeout=config.ADB_TRANSFER_TIMEOUT,
-                    creationflags=_no_window(),
-                )
-        except FileNotFoundError as exc:
-            raise AdbError(f"เรียกใช้ adb ไม่สำเร็จ: {exc}") from exc
-        except subprocess.TimeoutExpired as exc:
-            raise AdbError("ดึงไฟล์จากมือถือเกินเวลาที่กำหนด") from exc
+        adb = str(self.ensure_available())
 
-        if proc.returncode != 0:
-            message = (proc.stderr or proc.stdout or "").strip()
-            raise AdbError(message or "ดึงไฟล์จากมือถือไม่สำเร็จ")
+        attempts: list[tuple[list[str], str | None]] = [
+            ([adb, "-s", serial, "pull", remote_path, destination.name], str(destination.parent)),
+            ([adb, "-s", serial, "pull", remote_path, str(destination)], None),
+        ]
+
+        last_error = ""
+        for command, cwd in attempts:
+            try:
+                with self._lock:
+                    proc = subprocess.run(
+                        command,
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        timeout=config.ADB_TRANSFER_TIMEOUT,
+                        cwd=cwd,
+                        creationflags=_no_window(),
+                    )
+            except FileNotFoundError as exc:
+                raise AdbError(f"เรียกใช้ adb ไม่สำเร็จ: {exc}") from exc
+            except subprocess.TimeoutExpired as exc:
+                raise AdbError("ดึงไฟล์จากมือถือเกินเวลาที่กำหนด") from exc
+
+            if destination.exists() and destination.stat().st_size > 0:
+                return
+
+            stderr = (proc.stderr or "").strip()
+            stdout = (proc.stdout or "").strip()
+            last_error = stderr or stdout or f"exit code {proc.returncode}"
+
+        raise AdbError(_clean_adb_error(last_error))
 
     def apk_size_on_device(self, serial: str, package: str) -> int:
         """Return the APK size in bytes without transferring the file.
@@ -169,13 +268,21 @@ class ExtendedAdbManager(AdbManager):
         ``pm list packages -f -i`` returns the APK path, the package name and the
         installer package together. One call for the whole device replaces the
         hundreds of per-package queries the old code would have needed.
+
+        **Split APKs.** A modern app ships as one base APK plus a handful of
+        configuration splits (``…/split_config.arm64_v8a.apk``). ``pm`` lists
+        every one of them, so a naive parse produces the same package several
+        times over — which showed up in the UI as three identical rows for one
+        app. The base APK is preferred and the splits are folded into it.
         """
         args = ["-s", serial, "shell", "pm", "list", "packages", "-f", "-i"]
         if third_party_only:
             args.append("-3")
         output = self._run(args, timeout=90)
 
-        entries: list[AppEntry] = []
+        # package -> best entry seen so far
+        best: dict[str, AppEntry] = {}
+
         for line in output.splitlines():
             line = line.strip()
             if not line.startswith("package:"):
@@ -184,28 +291,40 @@ class ExtendedAdbManager(AdbManager):
             body = line[len("package:"):]
             if "=" not in body:
                 continue
+
+            # ``pm list packages -f -i`` prints
+            #   /data/app/…/base.apk=com.foo.bar installer=com.android.vending
+            # The installer fragment carries its own "=", so it has to be
+            # peeled off *before* the package name is taken from the last "=".
+            # Doing it the other way round made the installer look like the
+            # package name and reduced a 300-app device to five bogus rows.
+            installer_match = _RE_INSTALLER.search(body)
+            installer = installer_match.group(1) if installer_match else ""
+            if installer_match:
+                body = body[: installer_match.start()].rstrip()
+
             # APK paths may contain "=", so split on the last one.
             apk_path, _, package = body.rpartition("=")
             package = package.strip()
             if not package:
                 continue
 
-            installer_match = _RE_INSTALLER.search(body)
-            installer = installer_match.group(1) if installer_match else ""
-
             apk_path = apk_path.strip()
             is_system = apk_path.startswith("/system/") or apk_path.startswith("/vendor/")
 
-            entries.append(
-                AppEntry(
-                    package=package,
-                    apk_path=apk_path,
-                    is_system=is_system,
-                    installer=installer,
-                    source=classify_installer(installer, is_system=is_system),
-                )
+            entry = AppEntry(
+                package=package,
+                apk_path=apk_path,
+                is_system=is_system,
+                installer=installer,
+                source=classify_installer(installer, is_system=is_system),
             )
 
+            existing = best.get(package)
+            if existing is None or _better_apk_path(apk_path, existing.apk_path):
+                best[package] = entry
+
+        entries = list(best.values())
         entries.sort(key=lambda entry: entry.package.lower())
         return entries
 
@@ -355,6 +474,7 @@ class ExtendedAdbWorker(AdbWorker):
     live_signals_ready = Signal(list)                      # list[ThreatSignal]
     force_stop_results = Signal(list)                      # list[UninstallOutcome]
     icons_primed = Signal(int, int)                        # found, requested
+    app_labels_ready = Signal(dict)                        # {package: label}
     db_loaded = Signal(list, str)                          # rows, origin
     db_pushed = Signal(bool, str, str)                     # ok, message, url
     update_found = Signal(object)                          # dict
@@ -505,11 +625,15 @@ class ExtendedAdbWorker(AdbWorker):
         self.force_stop_results.emit(results)
 
     def _task_prime_icons(self, payload: dict) -> None:
-        """Pull APKs and extract launcher icons for the listed packages.
+        """Pull APKs and extract launcher icons **and labels** for the packages.
 
         Runs on the worker thread so the table can fill icons in progressively
         rather than freezing the GUI. ``limit`` keeps one scan from dragging a
         hundred megabytes across the cable.
+
+        The app label comes out of the very same APK as the icon, so the extra
+        cost is decoding ``AndroidManifest.xml`` — no additional download and
+        no additional ``adb`` round trip.
         """
         serial = self._require_device(payload.get("serial", ""))
         entries: Sequence[AppEntry] = payload.get("entries") or ()
@@ -518,6 +642,7 @@ class ExtendedAdbWorker(AdbWorker):
         store = IconStore()
         found = 0
         attempted = 0
+        labels: dict[str, str] = {}
 
         for entry in entries[:limit]:
             if self._stop_requested:
@@ -526,24 +651,78 @@ class ExtendedAdbWorker(AdbWorker):
             attempted += 1
             if store.prime(entry.package, entry.apk_path, self.manager, serial):
                 found += 1
+            label = store.label(entry.package, entry.apk_path)
+            if label:
+                labels[entry.package] = label
 
         self.icons_primed.emit(found, attempted)
-        self._log("INFO", f"ดึงไอคอนจริงได้ {found}/{attempted} รายการ (ที่เหลือใช้ไอคอนสำรอง)")
+        if labels:
+            self.app_labels_ready.emit(labels)
+        self._log(
+            "INFO",
+            f"ดึงไอคอนจริงได้ {found}/{attempted} รายการ · "
+            f"ชื่อแอป {len(labels)} รายการ (ที่เหลือใช้ชื่อแพ็คเกจแทน)",
+        )
 
     # -- database and application maintenance ------------------------------
 
     def _task_db_load(self, payload: dict) -> None:
-        """Fetch the shared blacklist, remote first then local."""
-        from . import updater
+        """Fetch the shared blacklist: GAS first, then the bundled local copy.
 
+        The Google Apps Script backend is the source of truth since v0.2 — the
+        admin approves new entries there and every install pulls the approved
+        list. The GitHub-hosted ``local_db.json`` stays as an offline fallback
+        so a technician on a dead connection still gets a working scan.
+
+        Only **one** network round trip is made when GAS is configured. The old
+        behaviour chained "GAS, then GitHub, then the local file", which could
+        block the worker thread for twenty seconds and stop the app from
+        closing on time.
+        """
+        from . import updater
+        from .gas_reporter import GASClient, get_gas_url
+
+        url = get_gas_url()
+        if url:
+            response = GASClient(url=url, timeout=6).fetch_approved()
+            if response.ok and response.entries:
+                rows = _rows_from_gas(response.entries)
+                self._log("OK", f"โหลดรายการต้องระวังจาก GAS — {len(rows)} รายการ")
+                self.db_loaded.emit(rows, "remote")
+                return
+            if response.message:
+                self._log("WARN", f"GAS ไม่ตอบกลับ ({response.message}) — ใช้ไฟล์ในเครื่องแทน")
+            local = updater.load_local_blacklist()
+            if local:
+                self._log("INFO", f"ใช้รายการต้องระวังจากเครื่อง — {len(local)} รายการ")
+                self.db_loaded.emit(local, "local")
+                return
+            self.db_loaded.emit([], "empty")
+            return
+
+        # No GAS configured — fall back to the legacy GitHub-hosted list.
+        self._log("INFO", "ยังไม่ได้ตั้งค่า GAS URL — ใช้ไฟล์ในเครื่องแทน")
         rows, origin = updater.load_blacklist(on_status=self._log)
         self.db_loaded.emit(rows, origin)
 
     def _task_db_push(self, payload: dict) -> None:
-        """Publish the edited blacklist back to GitHub."""
+        """Publish the edited blacklist to the GAS backend.
+
+        Falls back to the legacy GitHub Contents API only when no GAS URL has
+        been configured, so an existing installation keeps working during the
+        migration window.
+        """
         from . import updater
+        from .gas_reporter import GASClient, get_gas_url
 
         rows = payload.get("rows") or []
+        url = get_gas_url()
+
+        if url:
+            response = GASClient(url=url).push_approved(rows)
+            self.db_pushed.emit(response.ok, response.message, "")
+            return
+
         outcome = updater.push_blacklist_to_github(rows)
         self.db_pushed.emit(outcome.ok, outcome.message, outcome.commit_url)
 

@@ -866,7 +866,7 @@ class Surface(_HoverMixin, QWidget):
         if self.kind == "accent":
             top = blend(t["accent"], "#FFFFFF", 0.10)
             bottom = blend(t["accent"], "#000000", 0.06)
-            return top.name(), bottom.name(), with_alpha("#FFFFFF", 0.22).name(), with_alpha("#FFFFFF", 0.14).name()
+            return top.name(), bottom.name(), with_alpha("#FFFFFF", 0.22), with_alpha("#FFFFFF", 0.14)
         return t["surface"], blend(t["surface"], t["surface_alt"], 0.7), t["border"], t["border"]
 
     def paintEvent(self, event) -> None:  # noqa: N802 - Qt naming
@@ -1030,14 +1030,14 @@ class ActionButton(_HoverMixin, QAbstractButton):
                 "fill_top": blend(t["accent"], "#FFFFFF", 0.08).name(),
                 "fill_bottom": t["accent"],
                 "ink": "#FFFFFF",
-                "edge": with_alpha("#FFFFFF", 0.18).name(),
+                "edge": with_alpha("#FFFFFF", 0.18),
             }
         if self._kind == "danger":
             return {
                 "fill_top": blend(t["danger"], "#FFFFFF", 0.08).name(),
                 "fill_bottom": t["danger"],
                 "ink": "#FFFFFF",
-                "edge": with_alpha("#FFFFFF", 0.18).name(),
+                "edge": with_alpha("#FFFFFF", 0.18),
             }
         if self._kind == "ghost":
             return {
@@ -1051,7 +1051,7 @@ class ActionButton(_HoverMixin, QAbstractButton):
                 "fill_top": "#FFFFFF",
                 "fill_bottom": blend("#FFFFFF", t["accent"], 0.10).name(),
                 "ink": t["accent_press"],
-                "edge": with_alpha("#FFFFFF", 0.30).name(),
+                "edge": with_alpha("#FFFFFF", 0.30),
             }
         if self._kind == "quiet":
             return {
@@ -1187,7 +1187,7 @@ class IconButton(_HoverMixin, QAbstractButton):
         t = styles.current()
 
         if not self.isEnabled():
-            ink = with_alpha(t["text_faint"], 0.4).name()
+            ink = with_alpha(t["text_faint"], 0.4)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(with_alpha(t["text"], 0.05))
             painter.drawRoundedRect(QRectF(self.rect()).adjusted(2, 2, -2, -2), R_CONTROL, R_CONTROL)
@@ -1911,7 +1911,7 @@ class RowDelegate(QStyledItemDelegate):
         paint_pill(
             painter, rect, label,
             colour=colour,
-            background=with_alpha(colour, 0.12).name(),
+            background=with_alpha(colour, 0.12),
             dot=True,
         )
 

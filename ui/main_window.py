@@ -318,6 +318,7 @@ class MainWindow(QMainWindow):
         self.worker.live_signals_ready.connect(self._on_live_signals)
         self.worker.force_stop_results.connect(self._on_uninstall_results)
         self.worker.icons_primed.connect(self._on_icons_primed)
+        self.worker.app_labels_ready.connect(self._on_app_labels)
 
     def _install_shortcuts(self) -> None:
         QShortcut(QKeySequence("Ctrl+R"), self, activated=self.on_probe)
@@ -550,6 +551,12 @@ class MainWindow(QMainWindow):
         self.nav_scan.set_badge(len(threats))
         self.tools_page.set_database_status(len(self.state.blacklist), self.state.db_origin)
 
+    def _on_app_labels(self, labels: dict) -> None:
+        """Apply the launcher labels the worker read out of the APKs."""
+        if not labels or self._closing:
+            return
+        self.scan_page.set_app_labels(labels)
+
     def _on_scan_finished(self, threats: list, total: int) -> None:
         self._set_busy(False)
         self.nav_scan.set_badge(len(threats))
@@ -563,9 +570,12 @@ class MainWindow(QMainWindow):
         )
 
     def _on_icons_primed(self, found: int, attempted: int) -> None:
+        """Repaint the table once more so freshly extracted icons show up."""
+        if self._closing:
+            return
         if found:
             self.log_panel.append("OK", f"ดึงไอคอนจริงได้ {found}/{attempted} รายการ")
-            self.scan_page.refresh_icons()
+        self.scan_page.refresh_icons()
 
     # ------------------------------------------------------------------
     # App detail
@@ -886,7 +896,10 @@ class MainWindow(QMainWindow):
         self.log_panel.append("OK", "อัปเดตรายการในเครื่องเรียบร้อย")
 
     def _on_database_push(self, rows: list) -> None:
-        self.log_panel.append("INFO", "กำลังส่งรายการขึ้น GitHub…")
+        from core.gas_reporter import get_gas_url
+
+        target = "GAS" if get_gas_url() else "GitHub (ยังไม่ได้ตั้งค่า GAS)"
+        self.log_panel.append("INFO", f"กำลังส่งรายการขึ้น {target}…")
         self._spawn("db_push", {"rows": rows}, {"db_pushed": self._on_db_pushed})
 
     def _on_db_loaded(self, rows: list, origin: str) -> None:
@@ -1019,24 +1032,31 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt naming
         self._closing = True
-        try:
-            self.manager.kill_server()
-        except Exception:  # noqa: BLE001 - shutting down regardless
-            pass
 
+        # Order matters here. The adb server must be killed *after* the worker
+        # threads have stopped: killing the daemon while a task is mid-flight
+        # leaves that task waiting on a socket that will never answer, and the
+        # thread then refuses to end — which Qt reports as "QThread: Destroyed
+        # while thread is still running".
         self._wait_for_spawned()
 
-        # Wind the shared worker down too. Leaving its event loop running makes
+        # Wind the shared worker down. Leaving its event loop running makes
         # Qt print "QThread: Destroyed while thread is still running" and abort.
         shared = self.worker.thread()
         if shared is not None and shared.isRunning():
             shared.quit()
-            shared.wait(3000)
+            shared.wait(5000)
 
         # Drain the GAS reporter thread before Qt tears the window down.
         try:
             self.gas_reporter.shutdown()
         except Exception:  # noqa: BLE001 - shutdown must always succeed
+            pass
+
+        # Only now is it safe to take the adb server down.
+        try:
+            self.manager.kill_server()
+        except Exception:  # noqa: BLE001 - shutting down regardless
             pass
 
         super().closeEvent(event)

@@ -295,7 +295,7 @@ class SourceBadge(QLabel):
             self.setToolTip("แอปนี้ไม่ได้มาจากร้านค้าที่เชื่อถือได้")
         paint_pill(
             painter, QRectF(self.rect()), label,
-            colour=colour, background=with_alpha(colour, 0.12).name(), dot=True,
+            colour=colour, background=with_alpha(colour, 0.12), dot=True,
         )
         painter.end()
 
