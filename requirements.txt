@@ -1,0 +1,14 @@
+# ADSremovedPP — runtime dependencies
+# ------------------------------------
+# Install with:  pip install -r requirements.txt
+
+# Qt 6 bindings for Python. PySide6 ships official wheels for Windows,
+# macOS and Linux and needs no separate Qt installation.
+PySide6>=6.6.0,<7.0
+
+# HTTP client used by core.updater for the remote blacklist, version
+# check and self-update download.
+requests>=2.31.0
+
+# Optional: only needed to build a standalone .exe with PyInstaller.
+# PyInstaller>=6.3.0

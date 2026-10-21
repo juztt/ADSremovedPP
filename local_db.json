@@ -1,0 +1,92 @@
+[
+  {
+    "package": "com.fake.cleaner",
+    "appName": "Virus Cleaner Fake",
+    "type": "Adware",
+    "risk": "High"
+  },
+  {
+    "package": "com.browser.junk",
+    "appName": "Ads Browser",
+    "type": "Junk",
+    "risk": "Medium"
+  },
+  {
+    "package": "com.speedbooster.lite",
+    "appName": "Speed Booster Lite",
+    "type": "Junk",
+    "risk": "Medium"
+  },
+  {
+    "package": "com.junkcleaner.master",
+    "appName": "Junk Cleaner Master",
+    "type": "PUA",
+    "risk": "Medium"
+  },
+  {
+    "package": "com.free.booster.optimizer",
+    "appName": "Free Booster Optimizer",
+    "type": "PUA",
+    "risk": "Low"
+  },
+  {
+    "package": "com.handy.cleaner.pro",
+    "appName": "Handy Cleaner Pro",
+    "type": "Adware",
+    "risk": "High"
+  },
+  {
+    "package": "com.ads.cleaner.master",
+    "appName": "Ads Cleaner Master",
+    "type": "Adware",
+    "risk": "High"
+  },
+  {
+    "package": "com.battery.saver.pro",
+    "appName": "Battery Saver Pro",
+    "type": "PUA",
+    "risk": "Low"
+  },
+  {
+    "package": "com.video.player.hd.free",
+    "appName": "HD Video Player Free",
+    "type": "Adware",
+    "risk": "Medium"
+  },
+  {
+    "package": "com.browser.secure.fast",
+    "appName": "Secure Fast Browser",
+    "type": "Adware",
+    "risk": "High"
+  },
+  {
+    "package": "com.system.cleaner.boost",
+    "appName": "System Cleaner Boost",
+    "type": "Junk",
+    "risk": "Medium"
+  },
+  {
+    "package": "com.antivirus.free.scan",
+    "appName": "Antivirus Free Scan",
+    "type": "Scam",
+    "risk": "High"
+  },
+  {
+    "package": "com.launcher.boost.junk",
+    "appName": "Launcher Boost Junk",
+    "type": "Junk",
+    "risk": "Low"
+  },
+  {
+    "package": "com.photo.cleaner.boost",
+    "appName": "Photo Cleaner Boost",
+    "type": "Junk",
+    "risk": "Low"
+  },
+  {
+    "package": "com.screen.lock.ads",
+    "appName": "Screen Lock Ads",
+    "type": "Adware",
+    "risk": "High"
+  }
+]
