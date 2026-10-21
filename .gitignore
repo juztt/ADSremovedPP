@@ -24,6 +24,8 @@ tests/_updater_probe.bat
 .testdata/
 # APKs pulled by the probes
 *.apk
+# Temporary commit message files
+.commit_msg.txt
 # Throwaway renders from the design probes
 design/badge_*.png
 design/kit_test.png
