@@ -21,7 +21,7 @@ from pathlib import Path
 
 APP_NAME = "ADSremovedPP"
 APP_TITLE = "ADSremovedPP — Android ADB Cleaner & Repair Utility"
-CURRENT_VERSION = "1.0.0"
+CURRENT_VERSION = "0.1.0"
 
 # ---------------------------------------------------------------------------
 # Remote endpoints
