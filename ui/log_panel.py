@@ -83,7 +83,7 @@ class LogPanel(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        self.card = Card(variant="alt")
+        self.card = Card(kind="alt")
         inner = QVBoxLayout(self.card)
         inner.setContentsMargins(0, 0, 0, 0)
         inner.setSpacing(0)

@@ -177,7 +177,7 @@ class LivePage(QWidget):
         row.add_stretch(1)
         row.addWidget(self.btn_restrict)
 
-        card = Card(variant="alt")
+        card = Card(kind="alt")
         layout = QVBoxLayout(card)
         layout.setContentsMargins(12, 10, 12, 10)
         layout.addWidget(row)
@@ -203,9 +203,9 @@ class LivePage(QWidget):
         column.addWidget(self.table)
 
         self.empty_state = EmptyState(
-            "✓",
             "ไม่มีแอปกำลังทับหน้าจอ",
             "ตรวจอัตโนมัติเพื่อดูสถานะต่อเนื่อง",
+            glyph="shield",
         )
         column.addWidget(self.empty_state)
 
@@ -214,7 +214,7 @@ class LivePage(QWidget):
         column.addWidget(header)
         self.signals_header = header
 
-        self.signals_card = Card(variant="alt")
+        self.signals_card = Card(kind="alt")
         layout = QVBoxLayout(self.signals_card)
         layout.setContentsMargins(14, 12, 14, 12)
         layout.setSpacing(9)
@@ -316,7 +316,7 @@ class LivePage(QWidget):
             return
 
         for signal in signals:
-            card = Card(variant="sunken")
+            card = Card(kind="sunken")
             row = HBox(spacing=11)
 
             glyph = QLabel("✓" if signal.level == "OK" else "⚠" if signal.level == "WARN" else "✕")

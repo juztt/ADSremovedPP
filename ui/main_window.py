@@ -164,19 +164,20 @@ class MainWindow(QMainWindow):
         column.addWidget(head)
         column.addSpacing(12)
 
-        self.nav_scan = NavButton("◎", "สแกน", "scan")
-        self.nav_live = NavButton("◉", "ตรวจจับแอปที่ทำงาน", "live")
-        self.nav_tools = NavButton("⚒", "เครื่องมือ", "tools")
-        self.nav_database = NavButton("⛨", "ฐานข้อมูล", "database")
+        self.nav_scan = NavButton("scan", "สแกน", "scan")
+        self.nav_live = NavButton("live", "ตรวจจับแอปที่ทำงาน", "live")
+        self.nav_tools = NavButton("tools", "เครื่องมือ", "tools")
+        self.nav_database = NavButton("database", "ฐานข้อมูล", "database")
+
+        self._nav_items = (self.nav_scan, self.nav_live, self.nav_tools, self.nav_database)
 
         self.nav_scan.clicked.connect(lambda: self._select_page(PAGE_SCAN))
         self.nav_live.clicked.connect(lambda: self._select_page(PAGE_LIVE))
         self.nav_tools.clicked.connect(lambda: self._select_page(PAGE_TOOLS))
         self.nav_database.clicked.connect(lambda: self._select_page(PAGE_DATABASE))
 
-        for button in (self.nav_scan, self.nav_live, self.nav_tools, self.nav_database):
-            button.setProperty("baseText", button.text())
-            column.addWidget(button)
+        for nav in self._nav_items:
+            column.addWidget(nav)
 
         column.addStretch(1)
 
@@ -190,16 +191,18 @@ class MainWindow(QMainWindow):
 
         footer = HBox(spacing=4, margins=(4, 2, 2, 2))
         self.btn_theme = make_button(
-            "◐",
-            kind="ghost",
+            "",
+            kind="icon",
             tooltip="สลับธีมสว่าง / มืด",
             on_click=self._toggle_theme,
         )
+        # repaint the icon-button with the theme glyph
+        from .kit import paint_glyph  # local import to avoid widening the public surface
         footer.addWidget(self.btn_theme)
 
         self.btn_reconnect = make_button(
-            "↻",
-            kind="ghost",
+            "",
+            kind="icon",
             tooltip="ตรวจการเชื่อมต่ออีกครั้ง",
             on_click=self.on_probe,
         )
@@ -207,7 +210,7 @@ class MainWindow(QMainWindow):
         footer.addStretch(1)
         column.addWidget(footer)
 
-        self.nav_scan.setChecked(True)
+        self._set_active_nav(PAGE_SCAN)
         return sidebar
 
     def _wire_pages(self) -> None:
@@ -326,13 +329,18 @@ class MainWindow(QMainWindow):
 
     def _select_page(self, index: int) -> None:
         self.stack.setCurrentIndex(index)
-        for offset, button in enumerate(
-            (self.nav_scan, self.nav_live, self.nav_tools, self.nav_database)
-        ):
-            button.setChecked(offset == index)
+        self._set_active_nav(index)
 
         if index == PAGE_LIVE and not self.state.connected:
             self.live_page.reset()
+
+    def _set_active_nav(self, index: int) -> None:
+        nav_order = (self.nav_scan, self.nav_live, self.nav_tools, self.nav_database)
+        for offset, nav in enumerate(nav_order):
+            nav.set_active(offset == index)
+        # keep badge repaint consistent
+        for nav in nav_order:
+            nav.update()
 
     # ------------------------------------------------------------------
     # Background helpers

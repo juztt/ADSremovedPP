@@ -246,14 +246,14 @@ class DatabasePage(QWidget):
         column.addWidget(self.table)
 
         self.empty_state = EmptyState(
-            "⛨",
             "ฐานข้อมูลยังว่าง",
             "กด «เพิ่มรายการ» เพื่อเริ่มสร้างรายการต้องระวังของคุณเอง",
+            glyph="database",
         )
         column.addWidget(self.empty_state)
 
     def _build_footer(self, column: QVBoxLayout) -> None:
-        card = Card(variant="alt")
+        card = Card(kind="alt")
         column_widget = QVBoxLayout(card)
         column_widget.setContentsMargins(14, 13, 14, 14)
         column_widget.setSpacing(10)

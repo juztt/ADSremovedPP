@@ -442,6 +442,22 @@ QPushButton {{
     min-height: 18px;
 }}
 
+/* Kit-painted controls draw every pixel themselves. Clearing the Qt rules
+   here is what lets the QPainter radius, gradient and shadow actually show —
+   without this, a stylesheet border overrides the painted shape and the
+   button renders as a hard square.
+
+   No min-height / max-height here on purpose: Qt gives stylesheet sizing rules
+   priority over setFixedSize, so declaring them collapses painted buttons to
+   zero height. */
+QAbstractButton {{
+    background: transparent;
+    border: none;
+    border-radius: 0px;
+    padding: 0px;
+    margin: 0px;
+}}
+
 QPushButton:hover {{
     background-color: {t['surface']};
     border-color: {t['border_strong']};
@@ -567,32 +583,15 @@ QPushButton#Tile:pressed {{
 /* ---------- segmented control ---------- */
 
 QWidget#Segment {{
-    background-color: {t['surface_alt']};
-    border: 1px solid {t['border']};
-    border-radius: {RADIUS_CONTROL}px;
+    background-color: transparent;
+    border: none;
 }}
 
 QPushButton#SegmentButton {{
     background-color: transparent;
     border: none;
-    border-radius: 5px;
-    color: {t['text_muted']};
-    font-size: 12.5px;
-    font-weight: 500;
-    padding: 5px 11px;
-    min-height: 16px;
-}}
-
-QPushButton#SegmentButton:hover {{
-    color: {t['text']};
-    background-color: {t['surface_hover']};
-}}
-
-QPushButton#SegmentButton:checked {{
-    background-color: {t['surface']};
-    border: 1px solid {t['border']};
-    color: {t['text']};
-    font-weight: 600;
+    color: transparent;
+    padding: 0px;
 }}
 
 

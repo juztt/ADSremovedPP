@@ -38,26 +38,29 @@ from core.device_monitor import ThreatSignal
 
 from . import styles
 from .icons import IconStore
+from .kit import HeaderDelegate, RowDelegate
 from .widgets import (
     Card,
     EmptyState,
     HBox,
-    IconDelegate,
     IconLabel,
     PermissionChip,
-    PillDelegate,
     RiskPill,
     SearchField,
     SectionHeader,
     SegmentedControl,
-    StatChip,
+    SourceBadge,
+    StatTile,
     VBox,
     elide_middle,
+    icon_role,
     make_button,
+    meta_role,
     pill_role,
 )
 
-#: Column layout. Widths are hints; the table stretches the name column.
+#: Column layout. The names double as the spec handed to :class:`RowDelegate`,
+#: so the header, the row painter and the model can never drift apart.
 COL_CHECK = 0
 COL_ICON = 1
 COL_NAME = 2
@@ -66,8 +69,9 @@ COL_RISK = 4
 COL_SOURCE = 5
 COL_ACTIONS = 6
 
+COLUMN_KINDS = ["check", "icon", "name", "text", "risk", "source", "actions"]
 _COLUMN_HEADERS = ["", "", "แอปพลิเคชัน", "ประเภท", "ความเสี่ยง", "แหล่งที่มา", ""]
-_COLUMN_WIDTHS = [38, 48, 260, 108, 108, 118, 84]
+_COLUMN_WIDTHS = [46, 52, 260, 108, 108, 118, 96]
 
 RISK_FILTERS: Sequence[tuple[str, str]] = (
     ("all", "ทั้งหมด"),
@@ -134,10 +138,10 @@ class ScanPage(QWidget):
 
     def _build_device_strip(self) -> None:
         row = HBox(spacing=10)
-        self.chip_device = StatChip("อุปกรณ์", "ยังไม่ได้เชื่อมต่อ", "▤")
-        self.chip_android = StatChip("ระบบปฏิบัติการ", "—", "◈")
-        self.chip_battery = StatChip("แบตเตอรี่", "—", "◐")
-        self.chip_storage = StatChip("พื้นที่ว่าง", "—", "▦")
+        self.chip_device = StatTile("อุปกรณ์", "ยังไม่ได้เชื่อมต่อ", "phone")
+        self.chip_android = StatTile("ระบบปฏิบัติการ", "—", "shield")
+        self.chip_battery = StatTile("แบตเตอรี่", "—", "battery")
+        self.chip_storage = StatTile("พื้นที่ว่าง", "—", "storage")
         for chip in (self.chip_device, self.chip_android, self.chip_battery, self.chip_storage):
             row.add(chip, 1)
         self._body.addWidget(row)
@@ -203,17 +207,19 @@ class ScanPage(QWidget):
         header_view.setSectionResizeMode(COL_NAME, QHeaderView.ResizeMode.Stretch)
         header_view.setSectionResizeMode(COL_ACTIONS, QHeaderView.ResizeMode.Fixed)
 
-        self.table.setItemDelegateForColumn(COL_ICON, IconDelegate(self.table))
-        self.table.setItemDelegateForColumn(COL_RISK, PillDelegate("risk", self.table))
-        self.table.setItemDelegateForColumn(COL_SOURCE, PillDelegate("source", self.table))
+        self.table.setItemDelegate(RowDelegate(COLUMN_KINDS, self.table, row_height=52))
+        self.table.itemDelegate()._attach_hover(self.table)
+        self.table.horizontalHeader().setItemDelegate(
+            HeaderDelegate(COLUMN_KINDS, _COLUMN_HEADERS, self.table)
+        )
 
         self.table.itemSelectionChanged.connect(self._on_row_focus)
         self.table.itemChanged.connect(self._on_item_changed)
 
         self.empty_state = EmptyState(
-            "◎",
             "ยังไม่มีข้อมูล",
             "เสียบมือถือแล้วกด «สแกนใหม่» เพื่อเริ่มตรวจหารายการต้องระวัง",
+            glyph="scan",
         )
         self.empty_state.setVisible(False)
 
@@ -226,7 +232,7 @@ class ScanPage(QWidget):
         self._body.addWidget(stack_holder)
 
     def _build_selection_bar(self) -> None:
-        bar = Card(variant="alt")
+        bar = Card(kind="alt")
         row = HBox(spacing=10)
 
         self.sel_label = QLabel("เลือกแล้ว 0 แอป")
@@ -268,7 +274,7 @@ class ScanPage(QWidget):
         self._sync_selection_ui()
 
     def _build_detail_panel(self) -> None:
-        self.detail_card = Card(variant="alt")
+        self.detail_card = Card(kind="alt")
         column = QVBoxLayout(self.detail_card)
         column.setContentsMargins(14, 13, 14, 14)
         column.setSpacing(11)
@@ -413,12 +419,13 @@ class ScanPage(QWidget):
                 break
             item = self.table.item(row, COL_ICON)
             if item is not None:
-                item.setIcon(self._icons.icon(entry.package, entry.apk_path, 34))
+                item.setData(icon_role(), self._icons.pixmap(entry.package, entry.apk_path, 34))
+                self.table.viewport().update()
 
     def repaint_pills(self) -> None:
         """Re-apply palette colours after a theme switch."""
         for chip in (self.chip_device, self.chip_android, self.chip_battery, self.chip_storage):
-            chip.set_caption_text(chip.caption_label.text())
+            chip.repaint()
         self._set_detail(getattr(self, "_current", None))
 
     # ------------------------------------------------------------------
@@ -475,7 +482,8 @@ class ScanPage(QWidget):
             check = QTableWidgetItem("")
             check.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsUserCheckable)
             check.setData(pill_role(), "")
-            check.setToolTip(elide_middle(entry.package, 60))
+            check.setData(meta_role(), {"package": entry.package})
+            check.setToolTip(entry.package)
             if entry.package in checked:
                 check.setCheckState(Qt.CheckState.Checked)
             else:
@@ -483,35 +491,39 @@ class ScanPage(QWidget):
             self.table.setItem(row, COL_CHECK, check)
 
             icon = QTableWidgetItem("")
-            icon.setIcon(self._icons.icon(entry.package, entry.apk_path, 34))
+            icon.setData(icon_role(), self._icons.pixmap(entry.package, entry.apk_path, 34))
             icon.setFlags(Qt.ItemFlag.ItemIsEnabled)
             self.table.setItem(row, COL_ICON, icon)
 
             name = QTableWidgetItem(entry.display_name)
             name.setFlags(Qt.ItemFlag.ItemIsEnabled)
-            font = name.font()
-            font.setBold(True)
-            name.setFont(font)
+            name.setData(meta_role(), {"subtitle": entry.package})
             name.setToolTip(f"{entry.display_name}\n{entry.package}\n{entry.describe_risk()}")
             self.table.setItem(row, COL_NAME, name)
 
             type_item = QTableWidgetItem(entry.threat_type or ("ระบบ" if entry.is_system else "—"))
             type_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
-            type_item.setData(Qt.ItemDataRole.UserRole, entry.package)
+            type_item.setData(meta_role(), {"colour": styles.current()["text_muted"]})
             self.table.setItem(row, COL_TYPE, type_item)
 
             risk_item = QTableWidgetItem("")
             risk_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
             risk_item.setData(pill_role(), entry.effective_risk)
+            risk_item.setData(meta_role(), {"package": entry.package})
             self.table.setItem(row, COL_RISK, risk_item)
 
             source_item = QTableWidgetItem("")
             source_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
             source_item.setData(pill_role(), entry.source.kind)
+            source_item.setData(meta_role(), {"label": entry.source.label})
             self.table.setItem(row, COL_SOURCE, source_item)
 
             actions = QTableWidgetItem("")
             actions.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            actions.setData(meta_role(), {
+                "package": entry.package,
+                "glyphs": [("trash", "danger"), ("stop", "warn")],
+            })
             self.table.setItem(row, COL_ACTIONS, actions)
 
         self.table.blockSignals(False)
@@ -553,7 +565,8 @@ class ScanPage(QWidget):
         for row in range(self.table.rowCount()):
             item = self.table.item(row, COL_CHECK)
             if item is not None and item.checkState() == Qt.CheckState.Checked:
-                packages.append(item.toolTip())
+                name = item.data(meta_role()) or {}
+                packages.append(str(name.get("package", "")))
         return [p for p in packages if p]
 
     def checked_entries(self) -> list[AppEntry]:
