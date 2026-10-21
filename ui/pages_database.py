@@ -141,11 +141,21 @@ class EntryDialog(QDialog):
 
 
 class DatabasePage(QWidget):
-    """Table of blacklist rows with local editing and an optional GitHub push."""
+    """Table of blacklist rows with local editing and optional GAS cloud sync.
+
+    The page drives two writes:
+
+    * ``save_local_requested`` — persist the table to ``local_db.json``
+      on the technician's machine. Always available, no credentials needed.
+    * ``gas_config_changed`` — install a new GAS WebApp URL, reporter name
+      and (optionally) admin token. Triggers a worker restart in the main
+      window so subsequent uninstall batches report to the new backend.
+    """
 
     # -- outbound ----------------------------------------------------------
     save_local_requested = Signal(list)          # list[dict]
     push_remote_requested = Signal(list)         # list[dict]
+    gas_config_changed = Signal(str, str, str)  # url, reporter, admin_token
     status_message = Signal(str, str)            # level, message
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -169,6 +179,7 @@ class DatabasePage(QWidget):
 
         self._build_header(column)
         self._build_toolbar(column)
+        self._build_gas_panel(column)
         self._build_table(column)
         self._build_footer(column)
         column.addStretch(1)
@@ -222,6 +233,142 @@ class DatabasePage(QWidget):
         row.addWidget(self.risk_filter)
 
         column.addWidget(row)
+
+    def _build_gas_panel(self, column: QVBoxLayout) -> None:
+        """The card holding the GAS URL / reporter / admin token inputs.
+
+        The page never talks to the GAS backend directly — it only collects
+        the values, persists them, and emits ``gas_config_changed``. The main
+        window rebuilds the worker in response.
+        """
+        from core import gas_reporter
+        from PySide6.QtWidgets import QFormLayout, QLineEdit
+
+        header = SectionHeader(
+            "Cloud Sync · Google Apps Script",
+            "ตั้งค่า GAS WebApp URL เพื่อส่งรายงานการถอนแอปเข้า backend",
+        )
+        column.addWidget(header)
+        self.gas_header = header
+
+        card = Card()
+        outer = QVBoxLayout(card)
+        outer.setContentsMargins(16, 14, 16, 14)
+        outer.setSpacing(10)
+
+        # status pill at the top of the card
+        status_row = HBox(spacing=6)
+        self.gas_status_label = QLabel("ยังไม่ได้ตั้งค่า")
+        self.gas_status_label.setObjectName("Faint")
+        status_row.add(self.gas_status_label, 1)
+
+        self.btn_gas_test = make_button(
+            "ทดสอบการเชื่อมต่อ",
+            kind="ghost",
+            small=True,
+            tooltip="ยิง ping ไป GAS WebApp URL ที่ตั้งไว้",
+            on_click=self._on_gas_test,
+        )
+        self.btn_gas_save = make_button(
+            "บันทึกการตั้งค่า",
+            kind="primary",
+            small=True,
+            tooltip="บันทึก URL + reporter ลงเครื่อง และเปิดใช้งาน background uploader",
+            on_click=self._on_gas_save,
+        )
+        status_row.addWidget(self.btn_gas_test)
+        status_row.addWidget(self.btn_gas_save)
+        outer.addWidget(status_row)
+
+        form = QFormLayout()
+        form.setSpacing(8)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+
+        self.gas_url_input = QLineEdit()
+        self.gas_url_input.setPlaceholderText(
+            "https://script.google.com/macros/s/AKfy.../exec"
+        )
+        self.gas_url_input.setClearButtonEnabled(True)
+        form.addRow("GAS WebApp URL", self.gas_url_input)
+
+        self.gas_reporter_input = QLineEdit()
+        self.gas_reporter_input.setPlaceholderText("เช่น สาขาเซ็นทรัลเวิลด์")
+        self.gas_reporter_input.setClearButtonEnabled(True)
+        form.addRow("ชื่อสาขา / Reporter", self.gas_reporter_input)
+
+        self.gas_admin_input = QLineEdit()
+        self.gas_admin_input.setPlaceholderText("(ไม่บังคับ · ใช้เฉพาะถ้า GAS ตั้งค่าไว้)")
+        self.gas_admin_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.gas_admin_input.setClearButtonEnabled(True)
+        form.addRow("Admin token", self.gas_admin_input)
+
+        outer.addLayout(form)
+
+        hint = QLabel(
+            "แอปจะ POST รายการถอนการติดตั้งผ่าน background thread ทันทีที่ uninstall สำเร็จ — "
+            "ไม่บล็อก UI และทำงานต่อเมื่อออฟไลน์อยู่ก็จะข้ามไปอย่างเงียบ ๆ"
+        )
+        hint.setObjectName("Faint")
+        hint.setWordWrap(True)
+        outer.addWidget(hint)
+
+        column.addWidget(card)
+
+        # hydrate inputs from disk
+        cfg = gas_reporter.load_gas_config()
+        self.gas_url_input.setText(cfg.url)
+        self.gas_reporter_input.setText(cfg.reporter)
+        self.gas_admin_input.setText(cfg.admin_token)
+
+    def _on_gas_test(self) -> None:
+        """Round-trip a ping to the URL currently typed into the form."""
+        from core.gas_reporter import GASClient
+
+        url = self.gas_url_input.text().strip()
+        if not url:
+            self.gas_status_label.setText("⚠ กรุณากรอก URL ก่อน")
+            return
+        self.gas_status_label.setText("กำลังทดสอบ...")
+        self.gas_status_label.repaint() if hasattr(self.gas_status_label, "repaint") else None
+        response = GASClient(url=url, timeout=8).ping()
+        if response.ok:
+            self.gas_status_label.setText(f"✓ เชื่อมต่อได้ — {response.message}")
+        else:
+            self.gas_status_label.setText(f"✗ {response.message[:80]}")
+
+    def _on_gas_save(self) -> None:
+        """Persist all three fields, then ask the main window to rebuild the worker."""
+        from core import gas_reporter
+
+        url = self.gas_url_input.text().strip()
+        reporter = self.gas_reporter_input.text().strip() or gas_reporter._default_gas_config().reporter
+        admin_token = self.gas_admin_input.text().strip()
+
+        gas_reporter.set_gas_url(url)
+        gas_reporter.set_reporter(reporter)
+        gas_reporter.set_admin_token(admin_token)
+
+        if url:
+            self.gas_status_label.setText(f"✓ บันทึกเรียบร้อย — {url[:48]}...")
+            self.status_message.emit(
+                "OK",
+                f"GAS: ตั้งค่า backend ใหม่ → {url}",
+            )
+        else:
+            self.gas_status_label.setText("ปิดการส่งรายงาน (ไม่มี URL)")
+
+        self.gas_config_changed.emit(url, reporter, admin_token)
+
+    def refresh_gas_status(self) -> None:
+        """Pull the persisted config and refresh the status pill on focus."""
+        from core import gas_reporter
+
+        cfg = gas_reporter.load_gas_config()
+        if cfg.is_configured():
+            masked = cfg.url[:48] + "..." if len(cfg.url) > 50 else cfg.url
+            self.gas_status_label.setText(f"✓ พร้อมส่ง → {masked}")
+        else:
+            self.gas_status_label.setText("ยังไม่ได้ตั้งค่า — รายงานจะไม่ถูกส่ง")
 
     def _build_table(self, column: QVBoxLayout) -> None:
         self.table = QTableWidget(0, 5)

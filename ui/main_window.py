@@ -56,6 +56,42 @@ from .pages_scan import ScanPage
 from .pages_tools import ToolsPage
 from .widgets import HBox, Hairline, NavButton, VBox, make_button
 
+#: Map blacklist / risk-level strings coming from ``AppEntry`` to the
+#: four-tier Thai scheme the GAS backend stores.
+_RISK_LABELS = {
+    "critical": "สูงมาก",
+    "high": "สูง",
+    "medium": "ปานกลาง",
+    "low": "ต่ำ",
+    "safe": "ต่ำ",
+    "": "ปานกลาง",
+    "วิกฤต": "สูงมาก",
+    "สูงมาก": "สูงมาก",
+    "สูง": "สูง",
+    "ปานกลาง": "ปานกลาง",
+    "ต่ำ": "ต่ำ",
+    "ปลอดภัย": "ต่ำ",
+}
+
+
+def _risk_label(value: object) -> str:
+    """Coerce anything coming out of ``AppEntry`` into a known Thai level."""
+    return _RISK_LABELS.get(str(value or "").strip().lower(), "ปานกลาง")
+
+
+def _source_label(source: object) -> str:
+    """Pull a friendly ``source`` string out of a :class:`SourceVerdict`."""
+    if source is None:
+        return "ไม่ทราบ"
+    kind = getattr(source, "kind", "") or "unknown"
+    label_map = {
+        "play": "Play Store",
+        "oem": "Galaxy Store",
+        "side": "Sideload",
+        "unknown": "ไม่ทราบ",
+    }
+    return label_map.get(str(kind).lower(), "ไม่ทราบ")
+
 #: Navigation order. The index into the stacked widget matches this order.
 PAGE_SCAN = 0
 PAGE_LIVE = 1
@@ -74,6 +110,8 @@ class AppState:
         self.entries: list[AppEntry] = []
         self.live_snapshot: LiveSnapshot | None = None
         self.flags = FlagStore()
+        # GAS payload context (set by scan results)
+        self.android_release: str = ""
 
 
 class MainWindow(QMainWindow):
@@ -89,6 +127,11 @@ class MainWindow(QMainWindow):
         self.worker = worker
         self.state = AppState()
         self.icons = IconStore()
+
+        # background uploader that talks to the Google Apps Script backend
+        from core.gas_reporter import GASReporterWorker
+
+        self.gas_reporter = GASReporterWorker()
 
         self._spawned_threads: list[QThread] = []
         self._background_workers: list[ExtendedAdbWorker] = []
@@ -249,7 +292,14 @@ class MainWindow(QMainWindow):
         database.status_message.connect(self.log_panel.append)
         database.save_local_requested.connect(self._on_database_saved)
         database.push_remote_requested.connect(self._on_database_push)
+        database.gas_config_changed.connect(self._on_gas_config_changed)
         database.set_path(config.LOCAL_DB_PORTABLE)
+        database.refresh_gas_status()
+
+        # -- GAS worker signals (background uploader)
+        self.gas_reporter.reported.connect(self._on_gas_reported)
+        self.gas_reporter.failed.connect(self._on_gas_failed)
+        self.gas_reporter.log_line.connect(self.log_panel.append)
 
     def _connect_worker(self) -> None:
         self.worker.task_requested.connect(self.worker._dispatch)
@@ -710,10 +760,103 @@ class MainWindow(QMainWindow):
             self.scan_page.remove_packages([r.package for r in succeeded])
             if self._closing:
                 return
+            self._ship_uninstall_report(results)
         failed = [r for r in results if not getattr(r, "success", False)]
         if failed and not self._closing:
             names = ", ".join(r.package for r in failed[:5])
             self.log_panel.append("ERROR", f"บางรายการทำไม่สำเร็จ: {names}")
+
+    def _ship_uninstall_report(self, results: list) -> None:
+        """POST the successful uninstall batch to the GAS backend.
+
+        Fire-and-forget — the worker has its own thread so the GUI never
+        blocks. A non-zero failed count is fine: the batch as a whole is
+        considered shipped either way.
+        """
+        from core.gas_reporter import get_gas_url, get_reporter
+
+        if not get_gas_url():
+            # No backend configured → skip silently; UI surfaces this separately.
+            return
+
+        succeeded = [
+            r for r in results
+            if getattr(r, "success", False) and getattr(r, "package", "")
+        ]
+        if not succeeded:
+            return
+
+        device_model = ""
+        if self.scan_page._entries:
+            head = self.scan_page._entries[0]
+            device_model = (
+                f"{getattr(head, 'manufacturer', '') or ''} "
+                f"{getattr(head, 'model', '') or ''}".strip()
+            ) or ""
+        os_version = ""
+        if self.state.android_release and self.state.android_release != "—":
+            os_version = f"Android {self.state.android_release}"
+
+        reporter = get_reporter() or ""
+
+        packages = []
+        known_entries = {entry.package: entry for entry in self.scan_page._entries}
+        for result in succeeded:
+            entry = known_entries.get(result.package)
+            packages.append({
+                "package": result.package,
+                "appName": getattr(result, "app_name", "") or result.package,
+                "category": getattr(entry, "category", "") if entry else "",
+                "riskLevel": _risk_label(getattr(entry, "effective_risk", "") if entry else ""),
+                "source": _source_label(getattr(entry, "source", None) if entry else None),
+            })
+
+        accepted = self.gas_reporter.submit(
+            packages,
+            device_model=device_model,
+            os_version=os_version,
+            reporter=reporter,
+        )
+        if not accepted:
+            self.log_panel.append(
+                "WARN",
+                "GAS: มีงานกำลังส่งอยู่ — รอสักครู่แล้วลองอีกครั้ง",
+            )
+
+    def _on_gas_reported(self, details: list) -> None:
+        if self._closing:
+            return
+        approved = sum(1 for _pkg, outcome in details if outcome == "logged")
+        queued = sum(1 for _pkg, outcome in details if outcome == "queued")
+        if approved or queued:
+            self.log_panel.append(
+                "INFO",
+                f"GAS: รายงาน {len(details)} รายการ → {approved} บันทึกสถิติ · {queued} รออนุมัติ",
+            )
+
+    def _on_gas_failed(self, message: str) -> None:
+        if self._closing:
+            return
+        self.log_panel.append("ERROR", f"GAS: {message}")
+
+    def _on_gas_config_changed(self, url: str, reporter: str, _admin_token: str) -> None:
+        """Recreate the GAS worker when the URL changes — different URL means a
+        different backend deployment; reusing the worker would still hold the
+        old endpoint inside the running task object.
+        """
+        from core.gas_reporter import GASReporterWorker
+
+        if not url:
+            self.log_panel.append("INFO", "GAS: ปิดการส่งรายงาน (ยังไม่ได้ตั้งค่า URL)")
+            return
+
+        # Drain the existing worker and rebuild against the new URL.
+        self.gas_reporter.shutdown()
+        self.gas_reporter = GASReporterWorker(url=url)
+        self.gas_reporter.reported.connect(self._on_gas_reported)
+        self.gas_reporter.failed.connect(self._on_gas_failed)
+        self.gas_reporter.log_line.connect(self.log_panel.append)
+        self.log_panel.append("OK", f"GAS: ตั้งค่า backend → {url}")
 
     def _on_action_result(self, label: str, ok: bool, message: str) -> None:
         level = "OK" if ok else "ERROR"
@@ -889,6 +1032,12 @@ class MainWindow(QMainWindow):
         if shared is not None and shared.isRunning():
             shared.quit()
             shared.wait(3000)
+
+        # Drain the GAS reporter thread before Qt tears the window down.
+        try:
+            self.gas_reporter.shutdown()
+        except Exception:  # noqa: BLE001 - shutdown must always succeed
+            pass
 
         super().closeEvent(event)
 

@@ -1,0 +1,680 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ADSremovedPP — Admin Control Center</title>
+  <!-- Tailwind via CDN — Dark Dashboard style -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            bg: '#0d0d10',
+            surface: '#18181b',
+            surface2: '#27272a',
+            line: '#3a3a3d',
+            accent: '#0a84ff',
+            accent2: '#3d9bff',
+            muted: '#a1a1a6',
+            faint: '#71717a',
+            success: '#30d158',
+            warning: '#ff9f0a',
+            danger: '#ff453a'
+          },
+          fontFamily: {
+            sans: ['"Segoe UI"', '"Leelawadee UI"', 'system-ui', 'sans-serif']
+          }
+        }
+      }
+    };
+  </script>
+  <style>
+    body { background: #0d0d10; color: #f5f5f7; font-family: "Segoe UI", "Leelawadee UI", system-ui, sans-serif; }
+    .glass { background: rgba(24,24,27,0.85); backdrop-filter: blur(12px); }
+    .pill { display: inline-flex; align-items: center; padding: 2px 10px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+    .scroll-thin::-webkit-scrollbar { width: 8px; height: 8px; }
+    .scroll-thin::-webkit-scrollbar-thumb { background: #3a3a3d; border-radius: 4px; }
+    .scroll-thin::-webkit-scrollbar-track { background: transparent; }
+    .skeleton { background: linear-gradient(90deg, #27272a 0%, #3a3a3d 50%, #27272a 100%); background-size: 200% 100%; animation: shimmer 1.4s infinite; }
+    @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+    .tab-active { color: #f5f5f7; border-bottom: 2px solid #0a84ff; }
+    .tab { color: #a1a1a6; border-bottom: 2px solid transparent; transition: all .15s ease; }
+    .tab:hover { color: #f5f5f7; }
+    .btn-primary { background: #0a84ff; color: white; }
+    .btn-primary:hover { background: #3d9bff; }
+    .btn-ghost { background: transparent; color: #a1a1a6; border: 1px solid #3a3a3d; }
+    .btn-ghost:hover { background: #27272a; color: #f5f5f7; }
+    .btn-danger { background: rgba(255,69,58,0.15); color: #ff453a; border: 1px solid rgba(255,69,58,0.4); }
+    .btn-danger:hover { background: rgba(255,69,58,0.25); }
+    .btn-success { background: rgba(48,209,88,0.15); color: #30d158; border: 1px solid rgba(48,209,88,0.4); }
+    .btn-success:hover { background: rgba(48,209,88,0.25); }
+    .input-base { background: #18181b; border: 1px solid #3a3a3d; color: #f5f5f7; border-radius: 8px; padding: 8px 12px; }
+    .input-base:focus { outline: none; border-color: #0a84ff; box-shadow: 0 0 0 3px rgba(10,132,255,0.2); }
+    .card { background: #18181b; border: 1px solid #3a3a3d; border-radius: 12px; }
+    .row-hover:hover { background: rgba(10,132,255,0.06); }
+    .toast { position: fixed; bottom: 24px; right: 24px; padding: 12px 16px; border-radius: 10px; font-size: 13px; font-weight: 600; z-index: 9999; max-width: 360px; box-shadow: 0 12px 30px rgba(0,0,0,0.5); }
+    .ring-focus:focus { outline: none; box-shadow: 0 0 0 3px rgba(10,132,255,0.3); border-color: #0a84ff; }
+  </style>
+</head>
+<body class="min-h-screen">
+
+  <!-- ============================================================ -->
+  <!-- LOGIN MODAL -->
+  <!-- ============================================================ -->
+  <div id="loginModal" class="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+    <div class="card w-full max-w-sm p-8 shadow-2xl">
+      <div class="flex items-center justify-center w-14 h-14 mx-auto mb-4 rounded-2xl bg-accent/15">
+        <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#0a84ff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+      </div>
+      <h1 class="text-xl font-bold text-center mb-1">Admin Control Center</h1>
+      <p class="text-muted text-xs text-center mb-6">กรอกรหัสผ่านเพื่อเข้าใช้งาน Dashboard</p>
+      <form id="loginForm" class="space-y-3">
+        <input type="password" id="passwordInput" class="input-base w-full" placeholder="รหัสผ่าน" autofocus />
+        <div id="loginError" class="text-danger text-xs hidden">รหัสผ่านไม่ถูกต้อง</div>
+        <button type="submit" class="btn-primary w-full py-2.5 rounded-lg font-semibold">เข้าสู่ระบบ</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- MAIN APP -->
+  <!-- ============================================================ -->
+  <div id="mainApp" class="hidden min-h-screen flex flex-col">
+
+    <!-- Top bar -->
+    <header class="glass sticky top-0 z-30 border-b border-line">
+      <div class="max-w-7xl mx-auto flex items-center justify-between px-6 py-3">
+        <div class="flex items-center gap-3">
+          <div class="w-9 h-9 rounded-lg bg-accent flex items-center justify-center">
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          </div>
+          <div>
+            <div class="font-bold text-sm">ADSremovedPP</div>
+            <div class="text-faint text-xs">Admin Control Center · v1.0</div>
+          </div>
+        </div>
+        <div class="flex items-center gap-2">
+          <button id="refreshBtn" class="btn-ghost px-3 py-2 rounded-lg text-sm font-medium flex items-center gap-2">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>
+            รีเฟรช
+          </button>
+          <button id="logoutBtn" class="btn-ghost px-3 py-2 rounded-lg text-sm font-medium">ออกจากระบบ</button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Tabs -->
+    <nav class="border-b border-line sticky top-[57px] z-20 bg-bg/80 backdrop-blur">
+      <div class="max-w-7xl mx-auto flex px-6">
+        <button data-tab="pending" class="tab tab-active px-5 py-3 text-sm font-semibold">รายการรออนุมัติ <span id="pendingCount" class="ml-1 text-xs text-accent"></span></button>
+        <button data-tab="approved" class="tab px-5 py-3 text-sm font-semibold">ฐานข้อมูลที่ใช้งานจริง</button>
+        <button data-tab="logs" class="tab px-5 py-3 text-sm font-semibold">ประวัติการลบ</button>
+        <button data-tab="add" class="tab px-5 py-3 text-sm font-semibold">เพิ่มรายการใหม่</button>
+      </div>
+    </nav>
+
+    <main class="flex-1 max-w-7xl w-full mx-auto px-6 py-6">
+
+      <!-- ============================================================ -->
+      <!-- TAB PENDING -->
+      <!-- ============================================================ -->
+      <section id="tab-pending" class="space-y-4">
+        <div class="flex items-center justify-between">
+          <div>
+            <h2 class="text-lg font-bold">รายการรออนุมัติ <span class="text-muted text-sm font-normal">(จากการถอนการติดตั้งของช่างหน้างาน)</span></h2>
+            <p class="text-faint text-sm">ตรวจสอบข้อมูลก่อนอนุมัติเข้าฐานข้อมูลส่วนกลาง</p>
+          </div>
+          <select id="riskFilter" class="input-base text-sm">
+            <option value="">ทุกระดับความเสี่ยง</option>
+            <option value="สูงมาก">สูงมาก</option>
+            <option value="สูง">สูง</option>
+            <option value="ปานกลาง">ปานกลาง</option>
+            <option value="ต่ำ">ต่ำ</option>
+          </select>
+        </div>
+
+        <div id="pendingEmpty" class="card p-12 text-center text-muted hidden">
+          <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="mx-auto mb-3 opacity-50"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 12l2 2 4-4"/></svg>
+          <div class="font-semibold">ไม่มีรายการรออนุมัติ</div>
+          <div class="text-xs mt-1">ช่างถอนแอปใหม่จะมาปรากฏที่นี่</div>
+        </div>
+
+        <div id="pendingList" class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3"></div>
+      </section>
+
+      <!-- ============================================================ -->
+      <!-- TAB APPROVED -->
+      <!-- ============================================================ -->
+      <section id="tab-approved" class="space-y-4 hidden">
+        <div class="flex items-center justify-between flex-wrap gap-3">
+          <div>
+            <h2 class="text-lg font-bold">ฐานข้อมูลที่ใช้งานจริง</h2>
+            <p class="text-faint text-sm">รายการที่แอป Python ใช้ตรวจสแกนเครื่องลูกค้า</p>
+          </div>
+          <div class="flex gap-2">
+            <input type="text" id="approvedSearch" class="input-base text-sm w-72" placeholder="ค้นหา package หรือชื่อแอป…" />
+            <select id="approvedRiskFilter" class="input-base text-sm">
+              <option value="">ทุกความเสี่ยง</option>
+              <option value="สูงมาก">สูงมาก</option>
+              <option value="สูง">สูง</option>
+              <option value="ปานกลาง">ปานกลาง</option>
+              <option value="ต่ำ">ต่ำ</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="card overflow-hidden">
+          <table class="w-full text-sm">
+            <thead class="bg-surface2 text-faint text-xs uppercase">
+              <tr>
+                <th class="text-left px-4 py-3 font-semibold">Package</th>
+                <th class="text-left px-4 py-3 font-semibold">ชื่อแอป</th>
+                <th class="text-left px-4 py-3 font-semibold">ประเภท</th>
+                <th class="text-left px-4 py-3 font-semibold">ความเสี่ยง</th>
+                <th class="text-left px-4 py-3 font-semibold">แหล่งที่มา</th>
+                <th class="text-left px-4 py-3 font-semibold">อนุมัติโดย</th>
+                <th class="text-right px-4 py-3 font-semibold">จัดการ</th>
+              </tr>
+            </thead>
+            <tbody id="approvedBody" class="divide-y divide-line"></tbody>
+          </table>
+        </div>
+        <div id="approvedEmpty" class="card p-12 text-center text-muted hidden">
+          ไม่พบรายการในฐานข้อมูล
+        </div>
+      </section>
+
+      <!-- ============================================================ -->
+      <!-- TAB LOGS -->
+      <!-- ============================================================ -->
+      <section id="tab-logs" class="space-y-4 hidden">
+        <div>
+          <h2 class="text-lg font-bold">ประวัติการลบ</h2>
+          <p class="text-faint text-sm">สถิติการลบแอปที่บันทึกจากทุกสาขา</p>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div class="card p-5">
+            <div class="text-faint text-xs uppercase mb-1">จำนวนการลบทั้งหมด</div>
+            <div id="statTotal" class="text-3xl font-bold">0</div>
+          </div>
+          <div class="card p-5">
+            <div class="text-faint text-xs uppercase mb-1">แอปที่ถูกลบเยอะสุด</div>
+            <div id="statTopApp" class="text-lg font-bold truncate">—</div>
+            <div id="statTopAppCount" class="text-faint text-xs"></div>
+          </div>
+          <div class="card p-5">
+            <div class="text-faint text-xs uppercase mb-1">สาขาที่ส่งข้อมูลเยอะสุด</div>
+            <div id="statTopReporter" class="text-lg font-bold truncate">—</div>
+            <div id="statTopReporterCount" class="text-faint text-xs"></div>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <div class="card p-5">
+            <h3 class="font-semibold mb-3 text-sm">Top 20 แอปที่ถูกลบเยอะสุด</h3>
+            <div id="topApps" class="space-y-2 max-h-80 overflow-y-auto scroll-thin"></div>
+          </div>
+          <div class="card p-5">
+            <h3 class="font-semibold mb-3 text-sm">สถิติต่อสาขา</h3>
+            <div id="topReporters" class="space-y-2 max-h-80 overflow-y-auto scroll-thin"></div>
+          </div>
+        </div>
+
+        <div class="card p-5">
+          <h3 class="font-semibold mb-3 text-sm">แนวโน้มรายวัน</h3>
+          <canvas id="trendChart" height="80"></canvas>
+        </div>
+      </section>
+
+      <!-- ============================================================ -->
+      <!-- TAB ADD NEW -->
+      <!-- ============================================================ -->
+      <section id="tab-add" class="space-y-4 hidden">
+        <div>
+          <h2 class="text-lg font-bold">เพิ่มรายการใหม่</h2>
+          <p class="text-faint text-sm">Admin เพิ่มชื่อแอปที่ต้องระวังเข้าฐานข้อมูลโดยตรง</p>
+        </div>
+
+        <div class="card p-6 max-w-2xl">
+          <form id="addForm" class="space-y-4">
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label class="text-xs text-faint block mb-1">Package Name *</label>
+                <input type="text" name="package" required class="input-base w-full" placeholder="com.example.app" />
+              </div>
+              <div>
+                <label class="text-xs text-faint block mb-1">ชื่อแอป</label>
+                <input type="text" name="appName" class="input-base w-full" placeholder="ชื่อที่ให้ช่างเห็น" />
+              </div>
+              <div>
+                <label class="text-xs text-faint block mb-1">ประเภท</label>
+                <select name="category" class="input-base w-full">
+                  <option value="Adware">Adware</option>
+                  <option value="PUA">PUA</option>
+                  <option value="Junk">Junk</option>
+                  <option value="Malware">Malware</option>
+                  <option value="Scam">Scam</option>
+                  <option value="อื่นๆ">อื่นๆ</option>
+                </select>
+              </div>
+              <div>
+                <label class="text-xs text-faint block mb-1">ระดับความเสี่ยง *</label>
+                <select name="riskLevel" required class="input-base w-full">
+                  <option value="สูงมาก">สูงมาก</option>
+                  <option value="สูง">สูง</option>
+                  <option value="ปานกลาง" selected>ปานกลาง</option>
+                  <option value="ต่ำ">ต่ำ</option>
+                </select>
+              </div>
+              <div>
+                <label class="text-xs text-faint block mb-1">แหล่งที่มา</label>
+                <select name="source" class="input-base w-full">
+                  <option value="Sideload">Sideload</option>
+                  <option value="Play Store">Play Store</option>
+                  <option value="Galaxy Store">Galaxy Store</option>
+                  <option value="ไม่ทราบ">ไม่ทราบ</option>
+                </select>
+              </div>
+              <div>
+                <label class="text-xs text-faint block mb-1">ผู้เพิ่ม</label>
+                <input type="text" name="addedBy" class="input-base w-full" placeholder="admin" value="admin" />
+              </div>
+            </div>
+            <div>
+              <label class="text-xs text-faint block mb-1">หมายเหตุ</label>
+              <textarea name="note" rows="3" class="input-base w-full" placeholder="รายละเอียดเพิ่มเติม (ไม่บังคับ)"></textarea>
+            </div>
+            <div class="flex justify-end gap-2">
+              <button type="reset" class="btn-ghost px-4 py-2 rounded-lg text-sm font-medium">ล้าง</button>
+              <button type="submit" class="btn-primary px-4 py-2 rounded-lg text-sm font-semibold">บันทึกเข้าฐานข้อมูล</button>
+            </div>
+          </form>
+        </div>
+      </section>
+
+    </main>
+
+    <footer class="border-t border-line mt-auto">
+      <div class="max-w-7xl mx-auto px-6 py-4 text-xs text-faint text-center">
+        © ADSremovedPP · GAS Backend v1.0 · การเข้าถึงถูกบันทึกไว้ใน Deletion_Logs
+      </div>
+    </footer>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- Toast container -->
+  <!-- ============================================================ -->
+  <div id="toastContainer"></div>
+
+  <!-- Chart.js สำหรับกราฟแนวโน้ม -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+  <script>
+    // ========================================================================
+    // State
+    // ========================================================================
+    var state = {
+      pending: [],
+      approved: [],
+      logs: null,
+      currentTab: 'pending'
+    };
+
+    // ========================================================================
+    // Helpers
+    // ========================================================================
+    function showToast(message, kind) {
+      kind = kind || 'info';
+      var colors = {
+        success: 'bg-success/20 text-success border border-success/40',
+        error: 'bg-danger/20 text-danger border border-danger/40',
+        warning: 'bg-warning/20 text-warning border border-warning/40',
+        info: 'bg-accent/20 text-accent border border-accent/40'
+      };
+      var el = document.createElement('div');
+      el.className = 'toast ' + (colors[kind] || colors.info);
+      el.textContent = message;
+      document.getElementById('toastContainer').appendChild(el);
+      setTimeout(function () { el.remove(); }, 3500);
+    }
+
+    function riskClass(level) {
+      var map = {
+        'สูงมาก': 'bg-danger/20 text-danger',
+        'สูง': 'bg-warning/20 text-warning',
+        'ปานกลาง': 'bg-warning/10 text-warning',
+        'ต่ำ': 'bg-accent/20 text-accent'
+      };
+      return map[level] || 'bg-faint/20 text-faint';
+    }
+
+    function categoryClass(c) {
+      if (c === 'Malware' || c === 'Scam') return 'bg-danger/15 text-danger';
+      if (c === 'Adware' || c === 'PUA') return 'bg-warning/15 text-warning';
+      if (c === 'Junk') return 'bg-faint/15 text-muted';
+      return 'bg-accent/15 text-accent';
+    }
+
+    function escapeHtml(s) {
+      return String(s || '').replace(/[&<>"']/g, function (c) {
+        return ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' })[c];
+      });
+    }
+
+    function fmtDate(s) {
+      if (!s) return '';
+      try {
+        var d = new Date(String(s).replace(' ', 'T'));
+        if (isNaN(d.getTime())) return String(s);
+        return d.toLocaleString('th-TH', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+      } catch (e) { return String(s); }
+    }
+
+    function callGAS(fnName, args) {
+      return new Promise(function (resolve, reject) {
+        var runner = google.script.run
+          .withSuccessHandler(resolve)
+          .withFailureHandler(function (err) { reject(new Error(String(err && err.message || err))); });
+        runner[fnName].apply(runner, args || []);
+      });
+    }
+
+    // ========================================================================
+    // Login
+    // ========================================================================
+    document.getElementById('loginForm').addEventListener('submit', function (e) {
+      e.preventDefault();
+      var password = document.getElementById('passwordInput').value;
+      callGAS('checkPassword', [password]).then(function (resp) {
+        if (resp && resp.ok) {
+          document.getElementById('loginModal').classList.add('hidden');
+          document.getElementById('mainApp').classList.remove('hidden');
+          loadAll();
+        } else {
+          var err = document.getElementById('loginError');
+          err.classList.remove('hidden');
+          setTimeout(function () { err.classList.add('hidden'); }, 2500);
+        }
+      }).catch(function (err) { showToast('เชื่อมต่อไม่ได้: ' + err.message, 'error'); });
+    });
+
+    document.getElementById('logoutBtn').addEventListener('click', function () {
+      document.getElementById('mainApp').classList.add('hidden');
+      document.getElementById('loginModal').classList.remove('hidden');
+      document.getElementById('passwordInput').value = '';
+    });
+
+    document.getElementById('refreshBtn').addEventListener('click', function () {
+      loadAll();
+      showToast('กำลังรีเฟรชข้อมูล…', 'info');
+    });
+
+    // ========================================================================
+    // Tabs
+    // ========================================================================
+    document.querySelectorAll('[data-tab]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var tab = btn.dataset.tab;
+        state.currentTab = tab;
+        document.querySelectorAll('[data-tab]').forEach(function (b) {
+          if (b.dataset.tab === tab) b.classList.add('tab-active');
+          else { b.classList.remove('tab-active'); }
+        });
+        ['pending', 'approved', 'logs', 'add'].forEach(function (id) {
+          document.getElementById('tab-' + id).classList.toggle('hidden', id !== tab);
+        });
+      });
+    });
+
+    // ========================================================================
+    // Data loaders
+    // ========================================================================
+    function loadAll() {
+      loadPending();
+      loadApproved();
+      loadLogs();
+    }
+
+    function loadPending() {
+      callGAS('listPending').then(function (resp) {
+        state.pending = (resp && resp.entries) || [];
+        renderPending();
+      }).catch(function (err) { showToast('โหลด Pending ไม่สำเร็จ: ' + err.message, 'error'); });
+    }
+
+    function loadApproved() {
+      var q = (document.getElementById('approvedSearch') || {}).value || '';
+      callGAS('listApproved', [q]).then(function (resp) {
+        state.approved = (resp && resp.entries) || [];
+        renderApproved();
+      }).catch(function (err) { showToast('โหลด Approved ไม่สำเร็จ: ' + err.message, 'error'); });
+    }
+
+    function loadLogs() {
+      callGAS('getDeletionStats').then(function (resp) {
+        state.logs = resp;
+        renderLogs();
+      }).catch(function (err) { /* noop */ });
+    }
+
+    // ========================================================================
+    // Render: Pending
+    // ========================================================================
+    function renderPending() {
+      var filter = document.getElementById('riskFilter').value;
+      var list = state.pending.slice();
+      if (filter) list = list.filter(function (e) { return e.riskLevel === filter; });
+      document.getElementById('pendingCount').textContent = list.length > 0 ? '(' + list.length + ')' : '';
+      var emptyEl = document.getElementById('pendingEmpty');
+      var listEl = document.getElementById('pendingList');
+      if (list.length === 0) {
+        emptyEl.classList.remove('hidden');
+        listEl.innerHTML = '';
+        return;
+      }
+      emptyEl.classList.add('hidden');
+      var html = list.map(function (e) {
+        return [
+          '<div class="card p-4 hover:border-accent/40 transition">',
+          '  <div class="flex items-start justify-between gap-3 mb-2">',
+          '    <div class="min-w-0 flex-1">',
+          '      <div class="font-mono text-xs text-accent truncate">' + escapeHtml(e.package) + '</div>',
+          '      <div class="font-semibold mt-1 truncate">' + escapeHtml(e.appName) + '</div>',
+          '    </div>',
+          '    <span class="pill ' + riskClass(e.riskLevel) + '">' + escapeHtml(e.riskLevel) + '</span>',
+          '  </div>',
+          '  <div class="grid grid-cols-2 gap-2 text-xs mb-3">',
+          '    <div><span class="text-faint">ประเภท:</span> <span class="pill ' + categoryClass(e.category) + '">' + escapeHtml(e.category) + '</span></div>',
+          '    <div><span class="text-faint">แหล่ง:</span> ' + escapeHtml(e.source) + '</div>',
+          '    <div><span class="text-faint">อุปกรณ์:</span> ' + escapeHtml(e.deviceModel) + '</div>',
+          '    <div><span class="text-faint">OS:</span> ' + escapeHtml(e.osVersion) + '</div>',
+          '    <div class="col-span-2"><span class="text-faint">ช่าง:</span> ' + escapeHtml(e.reporter) + '</div>',
+          '  </div>',
+          '  <div class="text-xs text-faint mb-3">ส่งเมื่อ: ' + fmtDate(e.submittedAt) + '</div>',
+          '  <div class="flex gap-2">',
+          '    <button data-act="approve" data-pkg="' + escapeHtml(e.package) + '" class="btn-success flex-1 py-2 rounded-lg text-sm font-semibold">อนุมัติ</button>',
+          '    <button data-act="reject" data-pkg="' + escapeHtml(e.package) + '" class="btn-danger flex-1 py-2 rounded-lg text-sm font-semibold">ปฏิเสธ</button>',
+          '  </div>',
+          '</div>'
+        ].join('\n');
+      }).join('');
+      listEl.innerHTML = html;
+    }
+
+    document.getElementById('riskFilter').addEventListener('change', renderPending);
+
+    document.getElementById('pendingList').addEventListener('click', function (e) {
+      var btn = e.target.closest('button[data-act]');
+      if (!btn) return;
+      var pkg = btn.dataset.pkg;
+      var act = btn.dataset.act;
+      if (act === 'approve') {
+        callGAS('approveItem', [pkg]).then(function (resp) {
+          if (resp && resp.ok) {
+            showToast('อนุมัติ ' + pkg, 'success');
+            loadPending(); loadApproved();
+          } else {
+            showToast('ล้มเหลว: ' + (resp && resp.error || 'unknown'), 'error');
+          }
+        }).catch(function (err) { showToast('ผิดพลาด: ' + err.message, 'error'); });
+      } else if (act === 'reject') {
+        if (!confirm('ปฏิเสธ ' + pkg + ' ใช่หรือไม่?')) return;
+        callGAS('rejectItem', [pkg]).then(function (resp) {
+          if (resp && resp.ok) {
+            showToast('ปฏิเสธ ' + pkg, 'success');
+            loadPending();
+          } else {
+            showToast('ล้มเหลว: ' + (resp && resp.error || 'unknown'), 'error');
+          }
+        }).catch(function (err) { showToast('ผิดพลาด: ' + err.message, 'error'); });
+      }
+    });
+
+    // ========================================================================
+    // Render: Approved
+    // ========================================================================
+    function renderApproved() {
+      var risk = (document.getElementById('approvedRiskFilter') || {}).value || '';
+      var rows = state.approved.slice();
+      if (risk) rows = rows.filter(function (e) { return e.riskLevel === risk; });
+      var tbody = document.getElementById('approvedBody');
+      var emptyEl = document.getElementById('approvedEmpty');
+      if (rows.length === 0) {
+        tbody.innerHTML = '';
+        emptyEl.classList.remove('hidden');
+        return;
+      }
+      emptyEl.classList.add('hidden');
+      tbody.innerHTML = rows.map(function (e) {
+        return [
+          '<tr class="row-hover">',
+          '  <td class="px-4 py-3 font-mono text-xs text-accent">' + escapeHtml(e.package) + '</td>',
+          '  <td class="px-4 py-3">' + escapeHtml(e.appName) + '</td>',
+          '  <td class="px-4 py-3"><span class="pill ' + categoryClass(e.category) + '">' + escapeHtml(e.category) + '</span></td>',
+          '  <td class="px-4 py-3"><span class="pill ' + riskClass(e.riskLevel) + '">' + escapeHtml(e.riskLevel) + '</span></td>',
+          '  <td class="px-4 py-3 text-muted">' + escapeHtml(e.source) + '</td>',
+          '  <td class="px-4 py-3 text-faint text-xs">' + escapeHtml(e.addedBy) + '</td>',
+          '  <td class="px-4 py-3 text-right"><button data-del="' + escapeHtml(e.package) + '" class="btn-danger px-3 py-1.5 rounded text-xs font-semibold">ลบ</button></td>',
+          '</tr>'
+        ].join('');
+      }).join('');
+    }
+
+    document.getElementById('approvedSearch').addEventListener('input', function () {
+      // debounce
+      clearTimeout(window._searchT);
+      window._searchT = setTimeout(loadApproved, 250);
+    });
+    document.getElementById('approvedRiskFilter').addEventListener('change', renderApproved);
+
+    document.getElementById('approvedBody').addEventListener('click', function (e) {
+      var btn = e.target.closest('button[data-del]');
+      if (!btn) return;
+      var pkg = btn.dataset.del;
+      if (!confirm('ลบ ' + pkg + ' ออกจากฐานข้อมูล?')) return;
+      callGAS('deleteApprovedItem', [pkg]).then(function (resp) {
+        if (resp && resp.ok) { showToast('ลบสำเร็จ', 'success'); loadApproved(); }
+        else { showToast('ล้มเหลจ: ' + (resp && resp.error || ''), 'error'); }
+      }).catch(function (err) { showToast('ผิดพลาด: ' + err.message, 'error'); });
+    });
+
+    // ========================================================================
+    // Render: Logs
+    // ========================================================================
+    var trendChart;
+
+    function renderLogs() {
+      var data = state.logs || {};
+      document.getElementById('statTotal').textContent = data.total || 0;
+
+      var topApp = (data.byPackage || [])[0];
+      document.getElementById('statTopApp').textContent = topApp ? topApp.appName : '—';
+      document.getElementById('statTopAppCount').textContent = topApp ? (topApp.package + ' · ' + topApp.count + ' ครั้ง') : '';
+
+      var topRep = (data.byReporter || [])[0];
+      document.getElementById('statTopReporter').textContent = topRep ? topRep.reporter : '—';
+      document.getElementById('statTopReporterCount').textContent = topRep ? (topRep.count + ' รายการ') : '';
+
+      var appsHtml = (data.byPackage || []).map(function (e) {
+        var pct = data.total > 0 ? (e.count / data.total * 100) : 0;
+        return [
+          '<div class="text-xs">',
+          '  <div class="flex justify-between mb-1"><span class="font-mono text-accent truncate">' + escapeHtml(e.package) + '</span><span class="text-muted">' + e.count + '</span></div>',
+          '  <div class="h-1.5 bg-surface2 rounded-full overflow-hidden"><div class="h-full bg-accent" style="width:' + pct.toFixed(1) + '%"></div></div>',
+          '</div>'
+        ].join('');
+      }).join('');
+      document.getElementById('topApps').innerHTML = appsHtml || '<div class="text-faint text-xs">ยังไม่มีข้อมูล</div>';
+
+      var repHtml = (data.byReporter || []).map(function (e) {
+        var pct = data.total > 0 ? (e.count / data.total * 100) : 0;
+        return [
+          '<div class="text-xs">',
+          '  <div class="flex justify-between mb-1"><span>' + escapeHtml(e.reporter) + '</span><span class="text-muted">' + e.count + '</span></div>',
+          '  <div class="h-1.5 bg-surface2 rounded-full overflow-hidden"><div class="h-full bg-warning" style="width:' + pct.toFixed(1) + '%"></div></div>',
+          '</div>'
+        ].join('');
+      }).join('');
+      document.getElementById('topReporters').innerHTML = repHtml || '<div class="text-faint text-xs">ยังไม่มีข้อมูล</div>';
+
+      // Trend chart
+      var trendData = (data.byDate || []);
+      var labels = trendData.map(function (d) { return d.date; });
+      var counts = trendData.map(function (d) { return d.count; });
+      var ctx = document.getElementById('trendChart');
+      if (trendChart) trendChart.destroy();
+      trendChart = new Chart(ctx, {
+        type: 'line',
+        data: { labels: labels, datasets: [{
+          label: 'จำนวนการลบ',
+          data: counts,
+          borderColor: '#0a84ff',
+          backgroundColor: 'rgba(10,132,255,0.15)',
+          tension: 0.35,
+          fill: true,
+          pointRadius: 3
+        }]},
+        options: {
+          plugins: { legend: { labels: { color: '#a1a1a6' } } },
+          scales: {
+            x: { ticks: { color: '#71717a' }, grid: { color: '#27272a' } },
+            y: { ticks: { color: '#71717a' }, grid: { color: '#27272a' }, beginAtZero: true }
+          },
+          responsive: true,
+          maintainAspectRatio: false
+        }
+      });
+    }
+
+    // ========================================================================
+    // Add new item
+    // ========================================================================
+    document.getElementById('addForm').addEventListener('submit', function (e) {
+      e.preventDefault();
+      var form = e.target;
+      var data = {};
+      new FormData(form).forEach(function (v, k) { data[k] = String(v || '').trim(); });
+      if (!data.package) { showToast('กรุณากรอก Package Name', 'warning'); return; }
+      callGAS('addNewItemDirectly', [data]).then(function (resp) {
+        if (resp && resp.ok) {
+          showToast('เพิ่ม ' + resp.package + ' สำเร็จ', 'success');
+          form.reset();
+          loadApproved();
+        } else {
+          showToast('ล้มเหลว: ' + (resp && resp.error || 'unknown'), 'error');
+        }
+      }).catch(function (err) { showToast('ผิดพลาด: ' + err.message, 'error'); });
+    });
+
+    // ========================================================================
+    // First paint hint — โหลดทันทีเมื่อเปิดแอป
+    // ========================================================================
+    (function autoTryLogin() {
+      // ถ้าต้องการให้ auto-login ทุกครั้ง ให้ลบบรรทัดนี้ออก
+    })();
+  </script>
+</body>
+</html>
