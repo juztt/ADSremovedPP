@@ -31,7 +31,7 @@ CURRENT_VERSION = "1.0.0"
 # works offline while these remain unset — see updater.py for the fallbacks.
 # ---------------------------------------------------------------------------
 
-GITHUB_OWNER = "your-github-username"
+GITHUB_OWNER = "juzzt"
 GITHUB_REPO = "ADSremovedPP"
 GITHUB_BRANCH = "main"
 
